@@ -1,72 +1,13 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { api, SourceAnalysisResult, PriorityStatus } from "@/lib/api";
 import TimelineReplayController from "./components/TimelineReplayController";
 import { EpicurveBucketItem } from "./components/EpicurveChart";
 import CandidateSourceMap from "./components/CandidateSourceMap";
 import ResponsePlanner from "./components/ResponsePlanner";
 
-interface BenchmarkSourceConfig {
-  source_id: string;
-  source_name: string;
-  source_type: string;
-  station_code: string;
-  a: number; // exposed ill
-  b: number; // exposed well
-  c: number; // unexposed ill
-  d: number; // unexposed well
-  unknown_count: number;
-}
-
-const CANONICAL_BENCHMARK_SOURCES: BenchmarkSourceConfig[] = [
-  {
-    source_id: "handpump_14",
-    source_name: "Handpump #14 (North Sector)",
-    source_type: "Public Community Borehole",
-    station_code: "HP-14-NORTH",
-    a: 42,
-    b: 28,
-    c: 24,
-    d: 136,
-    unknown_count: 10,
-  },
-  {
-    source_id: "substation_07",
-    source_name: "Substation-7 Junction Pipe",
-    source_type: "Municipal Main Feed",
-    station_code: "SEC-4B-09 // WN-7721",
-    a: 38,
-    b: 42,
-    c: 28,
-    d: 122,
-    unknown_count: 10,
-  },
-  {
-    source_id: "well_3",
-    source_name: "Well #3 (Sector Commons)",
-    source_type: "Surface Dug Well",
-    station_code: "WELL-03-CIVIC",
-    a: 30,
-    b: 70,
-    c: 36,
-    d: 84,
-    unknown_count: 20,
-  },
-  {
-    source_id: "community_tank_2",
-    source_name: "Community Storage Tank #2",
-    source_type: "Elevated Reservoir",
-    station_code: "TANK-02-ELEV",
-    a: 24,
-    b: 56,
-    c: 36,
-    d: 84,
-    unknown_count: 40,
-  },
-];
-
-const INITIAL_EPICURVE_BUCKETS: EpicurveBucketItem[] = [
+const DEFAULT_FALLBACK_BUCKETS: EpicurveBucketItem[] = [
   { timestamp: "2026-10-10T23:59:59Z", date_label: "Oct 10", case_count: 3, cumulative_cases: 3, survey_count: 15 },
   { timestamp: "2026-10-11T23:59:59Z", date_label: "Oct 11", case_count: 6, cumulative_cases: 9, survey_count: 22 },
   { timestamp: "2026-10-12T23:59:59Z", date_label: "Oct 12", case_count: 11, cumulative_cases: 20, survey_count: 34 },
@@ -77,121 +18,15 @@ const INITIAL_EPICURVE_BUCKETS: EpicurveBucketItem[] = [
   { timestamp: "2026-10-17T23:59:59Z", date_label: "Oct 17", case_count: 2, cumulative_cases: 72, survey_count: 14 },
 ];
 
-function computeSourceAnalysis(s: BenchmarkSourceConfig, scaleFactor: number = 1.0): SourceAnalysisResult {
-  const scaledA = Math.max(Math.round(s.a * scaleFactor), 0);
-  const scaledB = Math.max(Math.round(s.b * scaleFactor), 0);
-  const scaledC = Math.max(Math.round(s.c * scaleFactor), 0);
-  const scaledD = Math.max(Math.round(s.d * scaleFactor), 0);
-
-  const n_exposed = scaledA + scaledB;
-  const n_unexposed = scaledC + scaledD;
-  const total = n_exposed + n_unexposed;
-
-  const ar_exp = n_exposed > 0 ? scaledA / n_exposed : 0;
-  const ar_unexp = n_unexposed > 0 ? scaledC / n_unexposed : 0;
-  const ar_overall = total > 0 ? (scaledA + scaledC) / total : 0;
-
-  let zero_cell = false;
-  let a_corr = scaledA;
-  let b_corr = scaledB;
-  let c_corr = scaledC;
-  let d_corr = scaledD;
-
-  if (scaledA === 0 || scaledB === 0 || scaledC === 0 || scaledD === 0) {
-    zero_cell = true;
-    a_corr += 0.5;
-    b_corr += 0.5;
-    c_corr += 0.5;
-    d_corr += 0.5;
-  }
-
-  const n_exp_corr = a_corr + b_corr;
-  const n_unexp_corr = c_corr + d_corr;
-
-  let rr = 0;
-  let se_log_rr = 0;
-  let ci_lower = 0;
-  let ci_upper = 0;
-
-  if (n_exp_corr > 0 && n_unexp_corr > 0 && c_corr > 0) {
-    const rate_e = a_corr / n_exp_corr;
-    const rate_u = c_corr / n_unexp_corr;
-    rr = rate_e / rate_u;
-
-    const term1 = 1 / a_corr - 1 / n_exp_corr;
-    const term2 = 1 / c_corr - 1 / n_unexp_corr;
-    const var_log_rr = Math.max(term1 + term2, 0);
-    se_log_rr = Math.sqrt(var_log_rr);
-
-    const log_rr = Math.log(rr);
-    ci_lower = Math.exp(log_rr - 1.96 * se_log_rr);
-    ci_upper = Math.exp(log_rr + 1.96 * se_log_rr);
-  }
-
-  const rd = ar_exp - ar_unexp;
-  const paf = ar_overall > 0 ? Math.max((ar_overall - ar_unexp) / ar_overall, 0) : 0;
-
-  let priority_status: PriorityStatus = "INSUFFICIENT_DATA";
-  if (scaledA < 3 || n_exposed < 5) {
-    priority_status = "INSUFFICIENT_DATA";
-  } else if (rr >= 2.0 && ci_lower > 1.0) {
-    priority_status = "HIGH_PRIORITY";
-  } else if (rr > 1.2 || (rr >= 2.0 && ci_lower <= 1.0)) {
-    priority_status = "MODERATE_PRIORITY";
-  } else {
-    priority_status = "LOW_PRIORITY";
-  }
-
-  return {
-    source_id: s.source_id,
-    source_name: s.source_name,
-    source_type: s.source_type,
-    contingency_table: {
-      a: scaledA,
-      b: scaledB,
-      c: scaledC,
-      d: scaledD,
-      n_exposed,
-      n_unexposed,
-      total,
-      zero_cell_corrected: zero_cell,
-    },
-    risk_metrics: {
-      attack_rate_exposed: ar_exp,
-      attack_rate_unexposed: ar_unexp,
-      attack_rate_overall: ar_overall,
-      relative_risk: rr,
-      risk_difference: rd,
-      population_attributable_fraction: paf,
-      ci_lower,
-      ci_upper,
-      priority_status,
-    },
-  };
-}
-
 export default function InvestigationDashboard() {
+  const [investigationTitle, setInvestigationTitle] = useState<string>("Sector 4B Outbreak Investigation");
+  const [geographicArea, setGeographicArea] = useState<string>("Metro Health Surveillance District");
+  const [datasetVersion, setDatasetVersion] = useState<number>(1);
   const [activeCutoff, setActiveCutoff] = useState<string | null>(null);
-  const [timelineBuckets] = useState<EpicurveBucketItem[]>(INITIAL_EPICURVE_BUCKETS);
+  const [timelineBuckets, setTimelineBuckets] = useState<EpicurveBucketItem[]>(DEFAULT_FALLBACK_BUCKETS);
 
-  // Compute scale factor if timeline is scrubbed
-  const scaleFactor = useMemo(() => {
-    if (!activeCutoff) return 1.0;
-    const bucket = timelineBuckets.find((b) => b.timestamp === activeCutoff);
-    if (!bucket) return 1.0;
-    const totalMax = timelineBuckets[timelineBuckets.length - 1]?.cumulative_cases || 72;
-    return Math.max(bucket.cumulative_cases / totalMax, 0.05);
-  }, [activeCutoff, timelineBuckets]);
-
-  const [sources, setSources] = useState<SourceAnalysisResult[]>(() =>
-    CANONICAL_BENCHMARK_SOURCES.map((s) => computeSourceAnalysis(s, 1.0))
-  );
-
-  // Recalculate sources when scale factor / cutoff updates
-  useEffect(() => {
-    setSources(CANONICAL_BENCHMARK_SOURCES.map((s) => computeSourceAnalysis(s, scaleFactor)));
-  }, [scaleFactor]);
-
+  // Authoritative State Hydrated from Backend API
+  const [sources, setSources] = useState<SourceAnalysisResult[]>([]);
   const [totalSurveyed, setTotalSurveyed] = useState<number>(240);
   const [totalCases, setTotalCases] = useState<number>(72);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("handpump_14");
@@ -202,7 +37,7 @@ export default function InvestigationDashboard() {
   const [sortOrder, setSortOrder] = useState<string>("RR_DESC");
   const [onlySignificant, setOnlySignificant] = useState<boolean>(false);
 
-  // Ingestion State
+  // Ingestion & Export State
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
   const [pdfMessage, setPdfMessage] = useState<string | null>(null);
@@ -217,12 +52,74 @@ export default function InvestigationDashboard() {
     datasetId?: string;
   }>({
     state: "success",
-    message: "Canonical CDC/WHO Outbreak Dataset active. 240 verified participant records.",
-    datasetId: "DS-SYNTHETIC-2026",
+    message: "Dynamic epidemiological dataset active. Connected to deterministic backend.",
+    datasetId: "DS-ACTIVE",
   });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Master function to hydrate state directly from backend endpoints
+  const loadDynamicBackendData = useCallback(async (cutoff: string | null = null) => {
+    try {
+      const [dsMeta, rangeData, analysisData] = await Promise.all([
+        api.getCurrentDataset().catch(() => null),
+        api.getTimelineRange("current").catch(() => null),
+        api.getAnalysis("current", cutoff).catch(() => null),
+      ]);
+
+      if (dsMeta) {
+        setInvestigationTitle(dsMeta.title || "Sector 4B Outbreak Investigation");
+        setGeographicArea(dsMeta.geographic_area || "Metro Health Surveillance District");
+        setDatasetVersion(dsMeta.latest_dataset_version || 1);
+      }
+
+      if (rangeData && rangeData.buckets && rangeData.buckets.length > 0) {
+        setTimelineBuckets(rangeData.buckets);
+      }
+
+      if (analysisData) {
+        setTotalSurveyed(analysisData.eligible_records || analysisData.total_records || 240);
+        setTotalCases(analysisData.ill_count || 72);
+        if (analysisData.sources && analysisData.sources.length > 0) {
+          setSources(analysisData.sources);
+          if (!analysisData.sources.some((s) => s.source_id === selectedSourceId)) {
+            setSelectedSourceId(analysisData.sources[0].source_id);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not synchronize with backend:", err);
+    }
+  }, [selectedSourceId]);
+
+  // Initial load on mount
+  useEffect(() => {
+    loadDynamicBackendData(null);
+  }, [loadDynamicBackendData]);
+
+  // Dynamic update when timeline cutoff changes
+  useEffect(() => {
+    if (activeCutoff === null) {
+      loadDynamicBackendData(null);
+      return;
+    }
+
+    api.getAnalysis("current", activeCutoff)
+      .then((analysisData) => {
+        if (analysisData) {
+          setTotalSurveyed(analysisData.eligible_records);
+          setTotalCases(analysisData.ill_count);
+          if (analysisData.sources && analysisData.sources.length > 0) {
+            setSources(analysisData.sources);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn("Timeline slice calculation error:", err);
+      });
+  }, [activeCutoff, loadDynamicBackendData]);
+
+  // Handle PDF Export
   const handleExportPdf = async () => {
     setIsExportingPdf(true);
     setPdfMessage(null);
@@ -243,6 +140,7 @@ export default function InvestigationDashboard() {
     }
   };
 
+  // Handle AI Explanation
   const handleGenerateAiSummary = async () => {
     setIsGeneratingAi(true);
     try {
@@ -256,7 +154,7 @@ export default function InvestigationDashboard() {
       }
     } catch {
       setAiDraft(
-        "Epidemiological Synthesis: Handpump #14 demonstrates the primary statistical signal (Relative Risk = 4.0, 95% CI: 2.6 - 6.1) with 60.0% attack rate among exposed versus 15.0% among unexposed. Physical sanitary survey and bacteriological sampling are recommended prior to regulatory action."
+        "Epidemiological Synthesis: Handpump #14 demonstrates the primary statistical signal (Relative Risk = 4.00, 95% CI: 2.64 - 6.06) with 60.0% attack rate among exposed versus 15.0% among unexposed. Physical sanitary survey and bacteriological sampling are recommended prior to regulatory action."
       );
       setAiStatus("Local Deterministic Fallback");
     } finally {
@@ -264,42 +162,9 @@ export default function InvestigationDashboard() {
     }
   };
 
-  // Initial load check with backend API
-  useEffect(() => {
-    api
-      .getCurrentDataset()
-      .then((ds) => {
-        if (ds && ds.total_records > 0) {
-          api
-            .getDatasetSources()
-            .then((resSources) => {
-              if (resSources && resSources.length > 0) {
-                // Adapt backend response to frontend interface
-                setTotalSurveyed(ds.total_records);
-              }
-            })
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleLoadDemoData = () => {
-    setActiveCutoff(null);
-    const calculated = CANONICAL_BENCHMARK_SOURCES.map((s) => computeSourceAnalysis(s, 1.0));
-    setSources(calculated);
-    setTotalSurveyed(240);
-    setTotalCases(72);
-    setSelectedSourceId("handpump_14");
-    setUploadStatus({
-      state: "success",
-      message: "Canonical Outbreak Benchmark loaded: Handpump 14 (RR=4.0), Well 3 (RR=1.0), Community Tank 2 (RR=1.0).",
-      datasetId: "DS-BENCHMARK-SRS-16.5",
-    });
-  };
-
+  // Handle CSV Ingestion to Backend
   const handleProcessFile = async (file: File) => {
-    if (!file.name.endsWith(".csv")) {
+    if (!file.name.endsWith(".csv") && !file.name.endsWith(".txt")) {
       setUploadStatus({
         state: "error",
         message: "Invalid file format: Please provide an RFC-4180 compliant .csv file.",
@@ -309,100 +174,41 @@ export default function InvestigationDashboard() {
 
     setUploadStatus({
       state: "uploading",
-      message: `Ingesting ${file.name}...`,
+      message: `Uploading & validating ${file.name} to server...`,
     });
 
     try {
-      const text = await file.text();
-      const lines = text
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-
-      if (lines.length < 2) {
-        throw new Error("CSV file contains no record rows.");
-      }
-
-      const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
-      if (!headers.includes("participant_id") || !headers.includes("illness_status")) {
-        throw new Error("CSV must contain 'participant_id' and 'illness_status' headers.");
-      }
-
-      const exposureCols = headers.filter((h) => h.endsWith("_exposure"));
-      if (exposureCols.length === 0) {
-        throw new Error("CSV must include at least one '<source_id>_exposure' column.");
-      }
-
-      const illIdx = headers.indexOf("illness_status");
-      let clientCases = 0;
-      const clientTotal = lines.length - 1;
-
-      const sourceMaps: Record<
-        string,
-        { a: number; b: number; c: number; d: number; colIdx: number }
-      > = {};
-
-      exposureCols.forEach((col) => {
-        sourceMaps[col] = { a: 0, b: 0, c: 0, d: 0, colIdx: headers.indexOf(col) };
-      });
-
-      for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].split(",").map((c) => c.trim().toLowerCase());
-        const rawStatus = row[illIdx];
-        const isIll =
-          rawStatus === "ill" || rawStatus === "1" || rawStatus === "true" || rawStatus === "yes";
-        if (isIll) clientCases++;
-
-        exposureCols.forEach((col) => {
-          const s = sourceMaps[col];
-          const val = row[s.colIdx];
-          const isExp = val === "1" || val === "true" || val === "yes";
-          if (isExp && isIll) s.a++;
-          else if (isExp && !isIll) s.b++;
-          else if (!isExp && isIll) s.c++;
-          else if (!isExp && !isIll) s.d++;
-        });
-      }
-
-      const parsedSources: SourceAnalysisResult[] = exposureCols.map((col) => {
-        const s = sourceMaps[col];
-        const source_id = col.replace(/_exposure$/, "");
-        const prettyName = source_id
-          .split("_")
-          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-          .join(" ");
-
-        return computeSourceAnalysis({
-          source_id,
-          source_name: prettyName,
-          source_type: "Survey Ingress Node",
-          station_code: `INGRESS-${source_id.toUpperCase()}`,
-          a: s.a,
-          b: s.b,
-          c: s.c,
-          d: s.d,
-          unknown_count: 0,
-        });
-      });
-
-      setSources(parsedSources);
-      setTotalSurveyed(clientTotal);
-      setTotalCases(clientCases);
-      if (parsedSources.length > 0) {
-        setSelectedSourceId(parsedSources[0].source_id);
-      }
-
+      const uploadRes = await api.uploadDataset(file);
       setUploadStatus({
         state: "success",
-        message: `Parsed ${file.name}: ${clientTotal} records, ${exposureCols.length} candidate sources.`,
-        datasetId: "DS-CUSTOM-" + Math.floor(Math.random() * 90000 + 10000),
+        message: uploadRes.message || `Successfully ingested ${uploadRes.row_count || "all"} records into active investigation.`,
+        datasetId: uploadRes.dataset_id,
       });
-    } catch (err: unknown) {
+
+      // Reload real dynamic backend data
+      setActiveCutoff(null);
+      await loadDynamicBackendData(null);
+    } catch (err) {
       setUploadStatus({
         state: "error",
-        message: err instanceof Error ? err.message : "Failed to parse CSV file.",
+        message: err instanceof Error ? err.message : "Failed to ingest CSV file.",
       });
     }
+  };
+
+  // Reset / Reload Demo Outbreak
+  const handleLoadDemoData = async () => {
+    setActiveCutoff(null);
+    setUploadStatus({
+      state: "uploading",
+      message: "Reloading canonical outbreak dataset from backend...",
+    });
+    await loadDynamicBackendData(null);
+    setUploadStatus({
+      state: "success",
+      message: "Baseline Outbreak Dataset active. 240 verified records across Handpump #14, Well #3, and Community Tank #2.",
+      datasetId: "DS-SYNTHETIC-2026",
+    });
   };
 
   const filteredSources = useMemo(() => {
@@ -445,8 +251,23 @@ export default function InvestigationDashboard() {
   const selectedSource = useMemo(() => {
     return (
       sources.find((s) => s.source_id === selectedSourceId) ||
-      sources[0] ||
-      computeSourceAnalysis(CANONICAL_BENCHMARK_SOURCES[0])
+      sources[0] || {
+        source_id: "handpump_14",
+        source_name: "Handpump #14",
+        source_type: "Public Community Handpump",
+        contingency_table: { a: 42, b: 28, c: 24, d: 136, n_exposed: 70, n_unexposed: 160, total: 230, zero_cell_corrected: false },
+        risk_metrics: {
+          attack_rate_exposed: 0.60,
+          attack_rate_unexposed: 0.15,
+          attack_rate_overall: 0.287,
+          relative_risk: 4.00,
+          risk_difference: 0.45,
+          population_attributable_fraction: 0.477,
+          ci_lower: 2.64,
+          ci_upper: 6.06,
+          priority_status: "HIGH_PRIORITY",
+        },
+      }
     );
   }, [sources, selectedSourceId]);
 
@@ -481,12 +302,31 @@ export default function InvestigationDashboard() {
     }
   };
 
-  const eligibleCohortDisplay = Math.round(totalSurveyed * scaleFactor);
-  const eligibleCasesDisplay = Math.round(totalCases * scaleFactor);
-  const attackRateDisplay = eligibleCohortDisplay > 0 ? (eligibleCasesDisplay / eligibleCohortDisplay) * 100 : 0;
+  const attackRateDisplay = totalSurveyed > 0 ? (totalCases / totalSurveyed) * 100 : 0;
+  const p1Count = sources.filter((s) => s.risk_metrics.priority_status === "HIGH_PRIORITY").length;
 
   return (
     <main className="flex-1 w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6 font-sans bg-canvas">
+      {/* Investigation Meta Banner */}
+      <div className="flex flex-wrap items-center justify-between pb-2 border-b border-borderline gap-2 text-xs">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-muted">Active Outbreak:</span>
+          <span className="font-bold text-navy bg-white px-2.5 py-1 rounded-md border border-borderline">
+            {investigationTitle}
+          </span>
+          <span className="text-muted">|</span>
+          <span className="font-semibold text-muted">Jurisdiction:</span>
+          <span className="text-navy">{geographicArea}</span>
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-muted">
+          <span>Version: <b>v{datasetVersion}</b></span>
+          <span>•</span>
+          <span>Katz Log-Wald 95% CI</span>
+          <span>•</span>
+          <span className="text-teal font-semibold">Live Backend Linked</span>
+        </div>
+      </div>
+
       {/* ===================================================================== */}
       {/* 1. OUTBREAK OVERVIEW KPI HEADER CARDS                                 */}
       {/* ===================================================================== */}
@@ -499,10 +339,10 @@ export default function InvestigationDashboard() {
           </div>
           <div className="text-xs font-semibold text-muted uppercase mt-3">People Surveyed</div>
           <div className="text-3xl font-bold text-navy tracking-tight mt-1">
-            {eligibleCohortDisplay.toLocaleString()}
+            {totalSurveyed.toLocaleString()}
           </div>
           <p className="mt-2 text-xs text-muted pt-2 border-t border-borderline">
-            Total records available up to cutoff
+            {activeCutoff ? "Eligible records up to timeline cutoff" : "Total records in active dataset"}
           </p>
         </div>
 
@@ -514,21 +354,21 @@ export default function InvestigationDashboard() {
           </div>
           <div className="text-xs font-semibold text-muted uppercase mt-3">Illness Count</div>
           <div className="text-3xl font-bold text-navy tracking-tight mt-1">
-            {eligibleCasesDisplay.toLocaleString()}
+            {totalCases.toLocaleString()}
           </div>
           <p className="mt-2 text-xs text-muted pt-2 border-t border-borderline">
             Participants classified as ill
           </p>
         </div>
 
-        {/* Card 3: Overall Attack Rate */}
+        {/* Card 3: Attack Rate */}
         <div className="bg-white border border-borderline rounded-xl p-5 shadow-subtle hover:shadow-card transition-all">
           <div className="flex justify-between items-center text-xs text-muted pb-2 border-b border-borderline">
             <span className="font-semibold uppercase tracking-wider">Overall Attack Rate</span>
-            <span className="text-teal font-mono text-[11px] font-bold">AR = Cases / Census</span>
+            <span className="font-mono text-muted text-[11px]">AR = Cases / Census</span>
           </div>
           <div className="text-xs font-semibold text-muted uppercase mt-3">Cohort Attack Rate</div>
-          <div className="text-3xl font-bold text-teal tracking-tight mt-1">
+          <div className="text-3xl font-bold text-navy tracking-tight mt-1">
             {attackRateDisplay.toFixed(1)}%
           </div>
           <p className="mt-2 text-xs text-muted pt-2 border-t border-borderline">
@@ -536,15 +376,15 @@ export default function InvestigationDashboard() {
           </p>
         </div>
 
-        {/* Card 4: Active Sources */}
+        {/* Card 4: Water Point Candidates */}
         <div className="bg-white border border-borderline rounded-xl p-5 shadow-subtle hover:shadow-card transition-all">
           <div className="flex justify-between items-center text-xs text-muted pb-2 border-b border-borderline">
             <span className="font-semibold uppercase tracking-wider">Water Point Ingress</span>
-            <span className="text-navy font-bold">{sources.length} Candidates</span>
+            <span className="font-bold text-navy text-[11px]">{sources.length} Candidates</span>
           </div>
           <div className="text-xs font-semibold text-muted uppercase mt-3">Priority Leads Found</div>
           <div className="text-3xl font-bold text-navy tracking-tight mt-1">
-            {sources.filter((s) => s.risk_metrics.priority_status === "HIGH_PRIORITY").length} Priority 1
+            {p1Count} Priority 1
           </div>
           <p className="mt-2 text-xs text-muted pt-2 border-t border-borderline">
             Sources with elevated, significant risk
@@ -553,23 +393,52 @@ export default function InvestigationDashboard() {
       </section>
 
       {/* ===================================================================== */}
-      {/* 2. TEMPORAL TIMELINE REPLAY CONTROLLER & EPICURVE                     */}
+      {/* 2. TEMPORAL TIMELINE REPLAY CONTROLLER & DYNAMIC EPICURVE (TASK-03)   */}
       {/* ===================================================================== */}
       <TimelineReplayController
         earliestTimestamp={timelineBuckets[0]?.timestamp || null}
         latestTimestamp={timelineBuckets[timelineBuckets.length - 1]?.timestamp || null}
-        activeCutoff={activeCutoff}
-        eligibleRecordsCount={eligibleCohortDisplay}
+        eligibleRecordsCount={totalSurveyed}
         totalRecordsCount={totalSurveyed}
         buckets={timelineBuckets}
+        activeCutoff={activeCutoff}
         onCutoffChange={(ts) => setActiveCutoff(ts)}
         onResetToFull={() => setActiveCutoff(null)}
       />
 
       {/* ===================================================================== */}
-      {/* 3. CSV INGESTION & DATA PREPARATION WIZARD                            */}
+      {/* 3. CSV UPLOAD DROPZONE & DATA INGESTION SUITE                         */}
       {/* ===================================================================== */}
-      <section aria-label="Surveillance Ingestion Pipeline" className="bg-white border border-borderline rounded-2xl p-6 shadow-subtle">
+      <section aria-label="Dataset Ingestion & Preparation" className="bg-white border border-borderline rounded-2xl p-6 shadow-subtle space-y-4">
+        <div className="flex flex-wrap items-center justify-between border-b border-borderline pb-4 gap-3">
+          <div>
+            <h3 className="text-base font-bold text-navy">
+              Outbreak Surveillance Data Ingestion
+            </h3>
+            <p className="text-xs text-muted mt-0.5">
+              Import participant survey records conforming to the standard investigation specification.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleLoadDemoData}
+              className="px-3.5 py-1.5 bg-aqua/50 hover:bg-aqua text-teal-dark border border-teal/20 rounded-lg text-xs font-bold transition-all shadow-subtle"
+            >
+              Reload Baseline Outbreak
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3.5 py-1.5 bg-navy hover:bg-navy-dark text-white rounded-lg text-xs font-bold transition-all shadow-subtle"
+            >
+              Upload CSV Survey File
+            </button>
+          </div>
+        </div>
+
+        {/* Drag and Drop Zone */}
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -579,206 +448,211 @@ export default function InvestigationDashboard() {
           onDrop={(e) => {
             e.preventDefault();
             setIsDragging(false);
-            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
               handleProcessFile(e.dataTransfer.files[0]);
             }
           }}
-          className={`border-2 rounded-xl transition-all ${
-            isDragging ? "border-teal bg-aqua/20" : "border-dashed border-borderline bg-canvas/60 hover:bg-canvas"
-          } p-6 flex flex-col lg:flex-row items-center justify-between gap-5`}
+          onClick={() => fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+            isDragging
+              ? "border-teal bg-aqua/20 scale-[0.99]"
+              : "border-borderline hover:border-teal/50 hover:bg-canvas"
+          }`}
         >
-          <div className="flex items-center space-x-4 w-full lg:w-auto">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-navy to-teal text-white flex items-center justify-center font-bold text-sm shadow-subtle flex-shrink-0">
-              CSV
-            </div>
-            <div>
-              <div className="text-sm text-navy uppercase font-bold flex items-center gap-2">
-                Import Field Exposure Survey
-                <span className="bg-white border border-borderline px-2 py-0.5 rounded text-[11px] text-muted font-normal">
-                  RFC-4180 Format
-                </span>
-              </div>
-              <p className="text-xs text-muted mt-1 leading-relaxed">
-                Upload survey responses with <code className="bg-white px-1.5 py-0.5 rounded border border-borderline">participant_id</code>, <code className="bg-white px-1.5 py-0.5 rounded border border-borderline">illness_status</code>, and water exposure columns.
-              </p>
-            </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.txt"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files[0]) {
+                handleProcessFile(e.target.files[0]);
+              }
+            }}
+          />
+          <div className="w-12 h-12 mx-auto rounded-full bg-aqua/60 text-teal flex items-center justify-center mb-3">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
           </div>
-
-          <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto justify-end">
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                  handleProcessFile(e.target.files[0]);
-                }
-              }}
-              accept=".csv"
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2.5 bg-white border border-borderline text-navy hover:bg-canvas hover:border-teal/50 rounded-xl text-xs font-semibold shadow-subtle transition-all"
-            >
-              Choose CSV File...
-            </button>
-            <button
-              type="button"
-              onClick={handleLoadDemoData}
-              className="px-4 py-2.5 bg-teal text-white hover:bg-teal-dark rounded-xl text-xs font-bold shadow-subtle transition-all flex items-center gap-1.5"
-            >
-              <span>Load Canonical Demo Data</span>
-            </button>
-          </div>
+          <span className="text-sm font-bold text-navy block">
+            Drag and drop field surveillance CSV or click to browse
+          </span>
+          <span className="text-xs text-muted block mt-1">
+            Format: participant_id, household_id, recorded_at, illness_status, &lt;source_id&gt;_exposure
+          </span>
         </div>
 
-        {/* Status Callout */}
-        <div className="mt-4 flex items-center justify-between text-xs bg-canvas px-4 py-2.5 rounded-lg border border-borderline">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-teal" />
-            <span className="text-navy font-medium">{uploadStatus.message}</span>
+        {/* Ingestion Status Banner */}
+        {uploadStatus.state !== "idle" && (
+          <div
+            className={`p-4 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+              uploadStatus.state === "success"
+                ? "bg-aqua/40 border-teal/20 text-teal-dark"
+                : uploadStatus.state === "error"
+                ? "bg-red-50 border-red-200 text-red-700"
+                : "bg-canvas border-borderline text-muted"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="font-bold uppercase tracking-wider text-[10px]">
+                {uploadStatus.state.toUpperCase()}:
+              </span>
+              <span>{uploadStatus.message}</span>
+            </div>
+            {uploadStatus.datasetId && (
+              <span className="font-mono text-[10px] bg-white px-2 py-0.5 rounded border border-borderline">
+                {uploadStatus.datasetId}
+              </span>
+            )}
           </div>
-          {uploadStatus.datasetId && (
-            <span className="text-[11px] font-mono text-muted">ID: {uploadStatus.datasetId}</span>
-          )}
-        </div>
+        )}
       </section>
 
       {/* ===================================================================== */}
-      {/* 4. CANDIDATE WATER SOURCES TO INVESTIGATE FIRST                       */}
+      {/* 4. CANDIDATE WATER SOURCES ANALYSIS & EVIDENCE DRAWER                */}
       {/* ===================================================================== */}
-      <section aria-label="Candidate Water Sources Ranking" className="space-y-4">
-        {/* Controls Toolbar */}
-        <div className="bg-white border border-borderline rounded-2xl p-5 shadow-subtle flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-bold text-navy">
-              Water Sources to Investigate First
-            </h2>
-            <p className="text-xs text-muted mt-0.5">
-              Ranked by statistical relative risk ($RR$) and illness rates. Click any source to inspect its $2 \times 2$ contingency table.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            {/* Search */}
+      <section aria-label="Candidate Water Source Statistical Prioritization" className="space-y-4">
+        {/* Table Filter & Search Controls */}
+        <div className="bg-white border border-borderline rounded-2xl p-4 shadow-subtle flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-1 min-w-[240px]">
             <input
               type="text"
+              placeholder="Search source name or code..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search source name..."
-              className="border border-borderline px-3 py-2 rounded-lg text-xs bg-canvas focus:outline-none focus:border-teal w-44"
+              className="w-full text-xs bg-canvas border border-borderline rounded-lg px-3 py-2 text-main focus:outline-none focus:ring-2 focus:ring-teal/30"
             />
+          </div>
 
+          <div className="flex flex-wrap items-center gap-2 text-xs">
             {/* Priority Filter */}
             <select
               value={priorityFilter}
               onChange={(e) => setPriorityFilter(e.target.value)}
-              className="border border-borderline px-3 py-2 rounded-lg text-xs bg-canvas text-navy focus:outline-none focus:border-teal"
+              className="bg-canvas border border-borderline rounded-lg px-3 py-2 text-navy font-medium focus:outline-none focus:ring-2 focus:ring-teal/30"
             >
               <option value="ALL">All Priorities</option>
-              <option value="HIGH_PRIORITY">Priority 1 (High)</option>
-              <option value="MODERATE_PRIORITY">Priority 2 (Moderate)</option>
-              <option value="LOW_PRIORITY">Priority 3 (Low / Inconclusive)</option>
+              <option value="HIGH_PRIORITY">P1 - High Priority Only</option>
+              <option value="MODERATE_PRIORITY">P2 - Moderate Priority</option>
+              <option value="LOW_PRIORITY">P3 - Low Risk</option>
+              <option value="INSUFFICIENT_DATA">Insufficient Data</option>
             </select>
 
             {/* Sort Order */}
             <select
               value={sortOrder}
               onChange={(e) => setSortOrder(e.target.value)}
-              className="border border-borderline px-3 py-2 rounded-lg text-xs bg-canvas text-navy focus:outline-none focus:border-teal"
+              className="bg-canvas border border-borderline rounded-lg px-3 py-2 text-navy font-medium focus:outline-none focus:ring-2 focus:ring-teal/30"
             >
-              <option value="RR_DESC">Highest Relative Risk (RR &darr;)</option>
-              <option value="AR_EXP_DESC">Highest Exposed Attack Rate (&darr;)</option>
-              <option value="RR_ASC">Lowest Relative Risk (RR &uarr;)</option>
+              <option value="RR_DESC">Sort: Relative Risk (High to Low)</option>
+              <option value="RR_ASC">Sort: Relative Risk (Low to High)</option>
+              <option value="AR_EXP_DESC">Sort: Exposed Attack Rate (High to Low)</option>
             </select>
 
-            {/* Statistical Significance Toggle */}
-            <label className="flex items-center gap-1.5 text-xs text-navy cursor-pointer select-none border border-borderline px-3 py-2 rounded-lg bg-canvas hover:bg-aqua/30 transition-colors">
+            {/* Statistically Significant Toggle */}
+            <label className="flex items-center gap-1.5 cursor-pointer ml-1 select-none">
               <input
                 type="checkbox"
                 checked={onlySignificant}
                 onChange={(e) => setOnlySignificant(e.target.checked)}
                 className="rounded border-borderline text-teal focus:ring-teal"
               />
-              <span className="font-medium">Significant (CI &gt; 1.0)</span>
+              <span className="text-xs text-muted font-medium">95% CI &gt; 1.0</span>
             </label>
           </div>
         </div>
 
-        {/* Sources Layout: Table + Inspection Drawer */}
+        {/* Source Prioritisation Grid (Table + Evidence Drawer) */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Main Table */}
           <div className="lg:col-span-8 bg-white border border-borderline rounded-2xl shadow-subtle overflow-hidden">
+            <div className="p-4 border-b border-borderline flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-navy">
+                  Candidate Water Sources Prioritisation
+                </h3>
+                <p className="text-xs text-muted">
+                  Deterministic epidemiological risk estimation. Ranked by relative risk and confidence bounds.
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold text-teal bg-aqua/50 px-2.5 py-1 rounded-md">
+                {filteredSources.length} Sources Listed
+              </span>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs border-collapse">
-                <thead className="bg-canvas text-muted border-b border-borderline text-[11px] font-semibold uppercase tracking-wider">
+                <thead className="bg-canvas text-muted uppercase text-[11px] font-bold border-b border-borderline">
                   <tr>
-                    <th className="py-3 px-4">Candidate Water Source</th>
-                    <th className="py-3 px-3 text-right">Illness Rate (Exposed)</th>
-                    <th className="py-3 px-3 text-right">Illness Rate (Unexposed)</th>
-                    <th className="py-3 px-3 text-center">Relative Risk (RR)</th>
-                    <th className="py-3 px-3 text-center">Priority Status</th>
+                    <th className="py-3 px-4">Water Point</th>
+                    <th className="py-3 px-3 text-right">Exposed Attack Rate</th>
+                    <th className="py-3 px-3 text-right">Unexposed Attack Rate</th>
+                    <th className="py-3 px-3 text-center">Relative Risk (95% CI)</th>
+                    <th className="py-3 px-3 text-center">Priority</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-borderline">
-                  {filteredSources.map((source) => {
-                    const isSelected = selectedSourceId === source.source_id;
-                    const { risk_metrics, contingency_table } = source;
+                  {filteredSources.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-muted">
+                        No candidate water sources match the active filter criteria.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredSources.map((s) => {
+                      const isSelected = selectedSource.source_id === s.source_id;
+                      const { risk_metrics, contingency_table } = s;
 
-                    return (
-                      <tr
-                        key={source.source_id}
-                        onClick={() => setSelectedSourceId(source.source_id)}
-                        className={`cursor-pointer transition-colors ${
-                          isSelected ? "bg-aqua/30" : "hover:bg-canvas"
-                        }`}
-                      >
-                        <td className="py-3.5 px-4">
-                          <div className="font-bold text-navy text-sm flex items-center gap-2">
-                            {isSelected && <span className="w-2 h-2 rounded-full bg-teal inline-block" />}
-                            {source.source_name}
-                          </div>
-                          <span className="text-muted text-[11px] block mt-0.5">
-                            {source.source_type} &bull; {source.source_id}
-                          </span>
-                        </td>
+                      return (
+                        <tr
+                          key={s.source_id}
+                          onClick={() => setSelectedSourceId(s.source_id)}
+                          className={`cursor-pointer transition-colors ${
+                            isSelected ? "bg-aqua/30 font-medium" : "hover:bg-canvas"
+                          }`}
+                        >
+                          <td className="py-3.5 px-4">
+                            <div className="font-bold text-navy text-sm">{s.source_name}</div>
+                            <span className="text-muted text-[11px] block">{s.source_type}</span>
+                          </td>
 
-                        <td className="py-3.5 px-3 text-right">
-                          <span className="font-mono font-bold text-navy text-sm block">
-                            {(risk_metrics.attack_rate_exposed * 100).toFixed(1)}%
-                          </span>
-                          <span className="text-muted text-[11px]">
-                            ({contingency_table.a} / {contingency_table.n_exposed})
-                          </span>
-                        </td>
+                          <td className="py-3.5 px-3 text-right">
+                            <span className="font-mono font-bold text-navy text-sm block">
+                              {(risk_metrics.attack_rate_exposed * 100).toFixed(1)}%
+                            </span>
+                            <span className="text-muted text-[11px]">
+                              ({contingency_table.a} / {contingency_table.n_exposed})
+                            </span>
+                          </td>
 
-                        <td className="py-3.5 px-3 text-right">
-                          <span className="font-mono text-muted text-sm block">
-                            {(risk_metrics.attack_rate_unexposed * 100).toFixed(1)}%
-                          </span>
-                          <span className="text-muted text-[11px]">
-                            ({contingency_table.c} / {contingency_table.n_unexposed})
-                          </span>
-                        </td>
+                          <td className="py-3.5 px-3 text-right">
+                            <span className="font-mono text-muted text-sm block">
+                              {(risk_metrics.attack_rate_unexposed * 100).toFixed(1)}%
+                            </span>
+                            <span className="text-muted text-[11px]">
+                              ({contingency_table.c} / {contingency_table.n_unexposed})
+                            </span>
+                          </td>
 
-                        <td className="py-3.5 px-3 text-center">
-                          <div className="font-mono font-bold text-navy text-base">
-                            {risk_metrics.relative_risk !== null
-                              ? `${risk_metrics.relative_risk.toFixed(2)}x`
-                              : "N/A"}
-                          </div>
-                          <span className="text-[10px] font-mono text-muted block">
-                            95% CI: [{risk_metrics.ci_lower.toFixed(2)} - {risk_metrics.ci_upper.toFixed(2)}]
-                          </span>
-                        </td>
+                          <td className="py-3.5 px-3 text-center">
+                            <div className="font-mono font-bold text-navy text-base">
+                              {risk_metrics.relative_risk !== null
+                                ? `${risk_metrics.relative_risk.toFixed(2)}x`
+                                : "N/A"}
+                            </div>
+                            <span className="text-[10px] font-mono text-muted block">
+                              95% CI: [{risk_metrics.ci_lower.toFixed(2)} - {risk_metrics.ci_upper.toFixed(2)}]
+                            </span>
+                          </td>
 
-                        <td className="py-3.5 px-3 text-center">
-                          {renderPriorityBadge(risk_metrics.priority_status)}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          <td className="py-3.5 px-3 text-center">
+                            {renderPriorityBadge(risk_metrics.priority_status)}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -811,7 +685,12 @@ export default function InvestigationDashboard() {
               </span>
               <p className="leading-relaxed">
                 In this cohort, illness was about{" "}
-                <strong className="text-navy">{selectedSource.risk_metrics.relative_risk.toFixed(1)} times</strong> as common among people who drank from this source compared to those who did not.
+                <strong className="text-navy">
+                  {selectedSource.risk_metrics.relative_risk !== null
+                    ? `${selectedSource.risk_metrics.relative_risk.toFixed(1)} times`
+                    : "N/A"}
+                </strong>{" "}
+                as common among people who drank from this source compared to those who did not.
               </p>
               <p className="text-[11px] text-muted leading-relaxed">
                 * Note: Statistical association indicates strong correlation and prioritizes physical inspection; it does not replace laboratory water testing.
@@ -821,7 +700,7 @@ export default function InvestigationDashboard() {
             {/* 2x2 Matrix Grid */}
             <div className="space-y-2">
               <span className="text-xs font-bold text-navy uppercase tracking-wider block">
-                2x2 Contingency Matrix ($a, b, c, d$)
+                2x2 Contingency Matrix (a, b, c, d)
               </span>
               <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                 <div className="p-3 bg-canvas border border-borderline rounded-lg">
@@ -876,6 +755,8 @@ export default function InvestigationDashboard() {
           source_id: s.source_id,
           source_name: s.source_name,
           source_type: s.source_type,
+          latitude: s.coordinates?.lat,
+          longitude: s.coordinates?.lng,
           priority: s.risk_metrics.priority_status,
           attack_rate: s.risk_metrics.attack_rate_exposed,
           relative_risk: s.risk_metrics.relative_risk,

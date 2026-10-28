@@ -144,8 +144,8 @@ def parse_and_validate_csv(
         row_has_error = False
         row_has_warning = False
         
-        # Clean dict
-        row = {k.strip().lower(): v.strip() for k, v in raw_row.items() if k}
+        # Clean dict safely guarding against None values in ragged CSV rows
+        row = {k.strip().lower(): (v.strip() if v is not None else "") for k, v in raw_row.items() if k}
         
         participant_id = row.get("participant_id", "")
         if not participant_id:

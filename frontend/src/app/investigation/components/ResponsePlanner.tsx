@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { api } from "@/lib/api";
 
 export interface ResponseTask {
@@ -58,6 +58,25 @@ export default function ResponsePlanner({ sources }: ResponsePlannerProps) {
   const [newRole, setNewRole] = useState("Field Sampling Officer");
   const [newPriority, setNewPriority] = useState<"high" | "medium" | "low">("high");
   const [newSourceId, setNewSourceId] = useState(sources[0]?.source_id || "handpump_14");
+
+  useEffect(() => {
+    api.getTasks("current")
+      .then((serverTasks: unknown) => {
+        if (serverTasks && Array.isArray(serverTasks) && serverTasks.length > 0) {
+          setTasks(serverTasks.map((t: Record<string, unknown>) => ({
+            task_id: String(t.task_id || `TASK-${Math.random()}`),
+            title: String(t.title || "Untitled Response Task"),
+            description: t.description ? String(t.description) : undefined,
+            assigned_role: t.assigned_role ? String(t.assigned_role) : undefined,
+            priority: (t.priority as "high" | "medium" | "low") || "high",
+            status: (t.status as "pending" | "in_progress" | "completed") || "pending",
+            due_date: t.due_date ? String(t.due_date) : undefined,
+            associated_source_id: t.associated_source_id ? String(t.associated_source_id) : undefined,
+          })));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleToggleStatus = async (taskId: string, currentStatus: string) => {
     let nextStatus = "pending";

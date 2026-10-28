@@ -68,8 +68,87 @@ export interface SourceAnalysisResult {
   source_id: string;
   source_name: string;
   source_type: string;
+  coordinates?: { lat: number; lng: number };
   contingency_table: ContingencyMatrix;
   risk_metrics: RiskMetrics;
+}
+
+export function mapBackendSourceToFrontend(s: Record<string, unknown>): SourceAnalysisResult {
+  const cTable = (s.contingency_table as Record<string, unknown>) || {};
+  const rMetrics = (s.risk_metrics as Record<string, unknown>) || {};
+  const cInterval = (s.confidence_interval_95 as Record<string, unknown>) || {};
+
+  const a = Number(s.exposed_ill ?? cTable.a ?? 0);
+  const b = Number(s.exposed_not_ill ?? cTable.b ?? 0);
+  const c = Number(s.unexposed_ill ?? cTable.c ?? 0);
+  const d = Number(s.unexposed_not_ill ?? cTable.d ?? 0);
+  const ne = Number(s.exposed_denominator ?? (a + b));
+  const nu = Number(s.unexposed_denominator ?? (c + d));
+  const total = ne + nu;
+
+  const ar_e = s.exposed_attack_rate !== undefined && s.exposed_attack_rate !== null
+    ? Number(s.exposed_attack_rate)
+    : (ne > 0 ? a / ne : 0);
+  const ar_u = s.unexposed_attack_rate !== undefined && s.unexposed_attack_rate !== null
+    ? Number(s.unexposed_attack_rate)
+    : (nu > 0 ? c / nu : 0);
+  const ar_tot = total > 0 ? (a + c) / total : 0;
+
+  const rr = s.relative_risk !== undefined && s.relative_risk !== null
+    ? Number(s.relative_risk)
+    : (ar_u > 0 ? ar_e / ar_u : 0);
+  const rd = s.risk_difference !== undefined && s.risk_difference !== null
+    ? Number(s.risk_difference)
+    : (ar_e - ar_u);
+  const paf = s.population_attributable_fraction !== undefined && s.population_attributable_fraction !== null
+    ? Number(s.population_attributable_fraction)
+    : (ar_tot > 0 ? Math.max((ar_tot - ar_u) / ar_tot, 0) : 0);
+
+  const ci_lower = Number(cInterval.lower ?? rMetrics.ci_lower ?? 0);
+  const ci_upper = Number(cInterval.upper ?? rMetrics.ci_upper ?? 0);
+
+  let pStatus: PriorityStatus = "LOW_PRIORITY";
+  const rawP = String(s.candidate_priority || s.priority_level || rMetrics.priority_status || "").toUpperCase();
+  if (rawP.includes("HIGH")) {
+    pStatus = "HIGH_PRIORITY";
+  } else if (
+    rawP.includes("MEDIUM") ||
+    rawP.includes("MODERATE") ||
+    rawP.includes("INCONCLUSIVE") ||
+    rawP.includes("VERIFICATION")
+  ) {
+    pStatus = "MODERATE_PRIORITY";
+  } else if (rawP.includes("INSUFFICIENT")) {
+    pStatus = "INSUFFICIENT_DATA";
+  }
+
+  return {
+    source_id: String(s.source_id || "source"),
+    source_name: String(s.source_name || s.source_id || "Water Source"),
+    source_type: String(s.source_type || "Water Point"),
+    coordinates: s.coordinates as { lat: number; lng: number } | undefined,
+    contingency_table: {
+      a,
+      b,
+      c,
+      d,
+      n_exposed: ne,
+      n_unexposed: nu,
+      total,
+      zero_cell_corrected: Boolean(cTable.zero_cell_corrected || false),
+    },
+    risk_metrics: {
+      attack_rate_exposed: ar_e,
+      attack_rate_unexposed: ar_u,
+      attack_rate_overall: ar_tot,
+      relative_risk: rr,
+      risk_difference: rd,
+      population_attributable_fraction: paf,
+      ci_lower,
+      ci_upper,
+      priority_status: pStatus,
+    },
+  };
 }
 
 export interface AnalysisRequest {
@@ -135,20 +214,21 @@ export const api = {
 
   /**
    * Dataset CSV Upload endpoint
-   * POST /api/v1/datasets/upload
-   * Accepts multipart/form-data containing survey_file (required) and optional sources_file
+   * POST /api/v1/datasets/import
    */
   async uploadDataset(
     surveyFile: File,
-    sourcesFile?: File
+    sourcesFile?: File,
+    invId: string = "current"
   ): Promise<DatasetUploadResponse> {
     const formData = new FormData();
-    formData.append("survey_file", surveyFile);
+    formData.append("file", surveyFile);
+    formData.append("investigation_id", invId);
     if (sourcesFile) {
       formData.append("sources_file", sourcesFile);
     }
 
-    const res = await fetch(`${API_BASE_URL}/datasets/upload`, {
+    const res = await fetch(`${API_BASE_URL}/datasets/import`, {
       method: "POST",
       body: formData,
     });
@@ -192,7 +272,81 @@ export const api = {
       },
       cache: "no-store",
     });
-    return handleResponse<SourceAnalysisResult[]>(res);
+    const rawList = await handleResponse<Record<string, unknown>[]>(res);
+    return (rawList || []).map(mapBackendSourceToFrontend);
+  },
+
+  /**
+   * Dynamic Timeline Range and Epicurve Buckets endpoint
+   * GET /api/v1/analysis/{invId}/timeline-range
+   */
+  async getTimelineRange(invId: string = "current", stepHours: number = 24): Promise<{
+    investigation_id: string;
+    dataset_version: number;
+    earliest_timestamp: string | null;
+    latest_timestamp: string | null;
+    total_records: number;
+    total_cases: number;
+    buckets: Array<{
+      timestamp: string;
+      date_label: string;
+      case_count: number;
+      cumulative_cases: number;
+      survey_count: number;
+    }>;
+  }> {
+    const res = await fetch(`${API_BASE_URL}/analysis/${invId}/timeline-range?step_hours=${stepHours}`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    return handleResponse(res);
+  },
+
+  /**
+   * Authoritative Epidemiological Analysis Snapshot
+   * GET /api/v1/analysis/{invId}
+   */
+  async getAnalysis(invId: string = "current", cutoff?: string | null): Promise<{
+    investigation_id: string;
+    dataset_version: number;
+    calculated_at: string;
+    timeline_cutoff: string | null;
+    is_timeline_filtered: boolean;
+    total_records: number;
+    eligible_records: number;
+    ill_count: number;
+    not_ill_count: number;
+    unknown_illness_count: number;
+    sources: SourceAnalysisResult[];
+  }> {
+    const url = cutoff
+      ? `${API_BASE_URL}/analysis/${invId}?timeline_cutoff=${encodeURIComponent(cutoff)}`
+      : `${API_BASE_URL}/analysis/${invId}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    const rawData = await handleResponse<Record<string, unknown>>(res);
+    const rawSources = (rawData.sources as Record<string, unknown>[]) || [];
+    return {
+      investigation_id: String(rawData.investigation_id || invId),
+      dataset_version: Number(rawData.dataset_version || 1),
+      calculated_at: String(rawData.calculated_at || new Date().toISOString()),
+      timeline_cutoff: rawData.timeline_cutoff ? String(rawData.timeline_cutoff) : null,
+      is_timeline_filtered: Boolean(rawData.is_timeline_filtered),
+      total_records: Number(rawData.total_records || 0),
+      eligible_records: Number(rawData.eligible_records || 0),
+      ill_count: Number(rawData.ill_count || 0),
+      not_ill_count: Number(rawData.not_ill_count || 0),
+      unknown_illness_count: Number(rawData.unknown_illness_count || 0),
+      sources: rawSources.map(mapBackendSourceToFrontend),
+    };
   },
 
   /**

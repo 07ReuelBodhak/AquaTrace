@@ -89,6 +89,9 @@ class SourceComparison(BaseModel):
     
     # Epidemiological measures
     relative_risk: Optional[float] = None
+    risk_difference: Optional[float] = None
+    risk_difference_pct: Optional[str] = None
+    population_attributable_fraction: Optional[float] = None
     confidence_interval_95: Optional[ConfidenceInterval] = None
     ci_calculable: bool = False
     ci_limitation_reason: Optional[str] = None

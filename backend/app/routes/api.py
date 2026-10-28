@@ -125,21 +125,31 @@ async def validate_csv_endpoint(file: UploadFile = File(...)):
     response, _ = parse_and_validate_csv(content, file.filename)
     return response
 
+@router.post("/datasets/upload")
 @router.post("/datasets/import")
 async def import_csv_dataset(
-    investigation_id: str = Form(...),
+    investigation_id: Optional[str] = Form("current"),
     data_origin: str = Form("Field Officer Survey"),
-    file: UploadFile = File(...)
+    file: Optional[UploadFile] = File(None),
+    survey_file: Optional[UploadFile] = File(None),
 ):
     """
-    Validates and commits a confirmed dataset version to the investigation.
+    Validates and commits a confirmed dataset version to the active investigation.
+    Supports both /datasets/import and /datasets/upload routes.
     """
-    inv = await get_investigation(investigation_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
+    upload_file = file or survey_file
+    if not upload_file:
+        raise HTTPException(status_code=400, detail="No CSV file provided.")
 
-    content = await file.read()
-    val_resp, accepted_records = parse_and_validate_csv(content, file.filename)
+    if investigation_id in ("current", "active", "default", None):
+        inv = await ensure_default_investigation_and_dataset()
+    else:
+        inv = await get_investigation(investigation_id)
+        if not inv:
+            inv = await ensure_default_investigation_and_dataset()
+
+    content = await upload_file.read()
+    val_resp, accepted_records = parse_and_validate_csv(content, upload_file.filename or "survey.csv")
     
     if not val_resp.is_valid:
         raise HTTPException(
@@ -152,7 +162,7 @@ async def import_csv_dataset(
 
     new_version = inv.latest_dataset_version + 1
     await save_dataset_version(
-        inv_id=investigation_id,
+        inv_id=inv.investigation_id,
         version=new_version,
         records=accepted_records,
         detected_sources=val_resp.detected_sources,
@@ -160,42 +170,85 @@ async def import_csv_dataset(
         warnings_count=val_resp.warned_rows
     )
     
-    analysis_cache.invalidate_investigation(investigation_id)
+    analysis_cache.invalidate_investigation(inv.investigation_id)
 
     return {
         "status": "success",
-        "investigation_id": investigation_id,
+        "investigation_id": inv.investigation_id,
         "dataset_version": new_version,
         "records_imported": len(accepted_records),
+        "total_rows": len(accepted_records),
+        "row_count": len(accepted_records),
+        "dataset_id": f"{inv.investigation_id}-v{new_version}",
         "detected_sources": val_resp.detected_sources,
-        "warnings_count": val_resp.warned_rows
+        "source_ids": val_resp.detected_sources,
+        "warnings_count": val_resp.warned_rows,
+        "message": f"Successfully imported {len(accepted_records)} verified participant records."
     }
 
-# ----------------- Active Dataset & Candidate Sources (TASK-02) -----------------
-@router.get("/datasets/current", response_model=CurrentDatasetResponse)
-async def get_current_dataset_metadata():
+from pathlib import Path
+
+async def ensure_default_investigation_and_dataset() -> Investigation:
     """
-    Returns active/latest investigation and dataset metadata.
-    Auto-initializes default municipal surveillance (INV-DEFAULT) if none exists.
+    Ensures an active investigation exists and loads the baseline 240-participant
+    outbreak dataset (data/synthetic_outbreak.csv) if no dataset has been imported yet.
     """
     investigations = await list_investigations()
     active_inv = None
     if investigations:
         active_inv = next((inv for inv in investigations if inv.status == "active"), investigations[0])
     
+    now_iso = datetime.now(timezone.utc).isoformat()
     if not active_inv:
-        now_iso = datetime.now(timezone.utc).isoformat()
         active_inv = Investigation(
             investigation_id="INV-DEFAULT",
-            title="Municipal Water Quality Surveillance",
-            geographic_area="Metro Health Jurisdiction",
-            notes="Default active municipal surveillance investigation",
+            title="Sector 4B Outbreak Investigation",
+            geographic_area="Metro Health Surveillance District",
+            notes="Active waterborne outbreak surveillance investigation",
             status="active",
             created_at=now_iso,
             updated_at=now_iso,
             latest_dataset_version=0
         )
         await save_investigation(active_inv)
+
+    if active_inv.latest_dataset_version <= 0:
+        possible_paths = [
+            Path(__file__).resolve().parent.parent.parent.parent / "data" / "synthetic_outbreak.csv",
+            Path("data/synthetic_outbreak.csv"),
+            Path("../data/synthetic_outbreak.csv")
+        ]
+        csv_path = next((p for p in possible_paths if p.exists()), None)
+        if csv_path:
+            try:
+                content = csv_path.read_bytes()
+                val_resp, accepted_records = parse_and_validate_csv(content, "synthetic_outbreak.csv")
+                if val_resp.is_valid and accepted_records:
+                    await save_dataset_version(
+                        inv_id=active_inv.investigation_id,
+                        version=1,
+                        records=accepted_records,
+                        detected_sources=val_resp.detected_sources,
+                        data_origin="Synthetic Outbreak Baseline 2026",
+                        warnings_count=val_resp.warned_rows
+                    )
+                    active_inv.latest_dataset_version = 1
+                    active_inv.updated_at = now_iso
+                    await save_investigation(active_inv)
+            except Exception:
+                pass
+
+    return active_inv
+
+
+# ----------------- Active Dataset & Candidate Sources (TASK-02) -----------------
+@router.get("/datasets/current", response_model=CurrentDatasetResponse)
+async def get_current_dataset_metadata():
+    """
+    Returns active/latest investigation and dataset metadata.
+    Auto-initializes default municipal surveillance with active dataset if none exists.
+    """
+    active_inv = await ensure_default_investigation_and_dataset()
     
     total_records = 0
     detected_sources: List[str] = []
@@ -230,27 +283,12 @@ async def get_dataset_sources(
     Returns the evaluated candidate water sources for active dataset with 2x2 counts, attack rates,
     relative risk, Wald 95% CI, and priority status. Supports sorting and priority filtering.
     """
-    if investigation_id:
+    if investigation_id and investigation_id not in ("current", "active", "default"):
         inv = await get_investigation(investigation_id)
         if not inv:
             raise HTTPException(status_code=404, detail=f"Investigation '{investigation_id}' not found")
     else:
-        investigations = await list_investigations()
-        if investigations:
-            inv = next((i for i in investigations if i.status == "active"), investigations[0])
-        else:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            inv = Investigation(
-                investigation_id="INV-DEFAULT",
-                title="Municipal Water Quality Surveillance",
-                geographic_area="Metro Health Jurisdiction",
-                notes="Default active municipal surveillance investigation",
-                status="active",
-                created_at=now_iso,
-                updated_at=now_iso,
-                latest_dataset_version=0
-            )
-            await save_investigation(inv)
+        inv = await ensure_default_investigation_and_dataset()
 
     if inv.latest_dataset_version <= 0:
         return []
@@ -353,33 +391,37 @@ async def get_epidemiological_analysis(
     Computes 2x2 contingency matrix, attack rates, relative risk, and Wald 95% CIs.
     Utilizes versioned caching and strictly prevents future data leakage.
     """
-    inv = await get_investigation(inv_id)
+    if inv_id in ("current", "active", "default"):
+        inv = await ensure_default_investigation_and_dataset()
+    else:
+        inv = await get_investigation(inv_id)
     if not inv:
         raise HTTPException(status_code=404, detail="Investigation not found")
 
-    ver = version or inv.latest_dataset_version
+    ver = version if isinstance(version, int) else inv.latest_dataset_version
+    cutoff = timeline_cutoff if isinstance(timeline_cutoff, str) else None
     if ver <= 0:
         raise HTTPException(status_code=400, detail="No dataset imported for this investigation yet.")
 
     # Check cache
-    cached = analysis_cache.get(inv_id, ver, timeline_cutoff)
+    cached = analysis_cache.get(inv.investigation_id, ver, cutoff)
     if cached is not None:
         return cached
 
-    dataset = await get_dataset_version(inv_id, ver)
+    dataset = await get_dataset_version(inv.investigation_id, ver)
     if not dataset:
         raise HTTPException(status_code=404, detail=f"Dataset version {ver} not found.")
 
     analysis = compute_timeline_analysis(
-        investigation_id=inv_id,
+        investigation_id=inv.investigation_id,
         dataset_version=ver,
         records=dataset["records"],
         detected_sources=dataset["detected_sources"],
-        timeline_cutoff=timeline_cutoff
+        timeline_cutoff=cutoff
     )
 
     # Save in bounded cache
-    analysis_cache.set(inv_id, ver, analysis, timeline_cutoff)
+    analysis_cache.set(inv.investigation_id, ver, analysis, cutoff)
     return analysis
 
 @router.get("/analysis/timeline-range", response_model=TimelineRangeResponse)
@@ -393,18 +435,14 @@ async def get_timeline_range(
     Returns the temporal bounds, total cases, and epicurve date buckets
     for the timeline scrubber and epidemic curve visualization.
     """
-    if inv_id:
+    if inv_id and inv_id not in ("current", "active", "default"):
         inv = await get_investigation(inv_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Investigation not found")
     else:
-        investigations = await list_investigations()
-        if investigations:
-            inv = next((i for i in investigations if i.status == "active"), investigations[0])
-        else:
-            raise HTTPException(status_code=404, detail="No active investigation found")
+        inv = await ensure_default_investigation_and_dataset()
 
-    ver = version or inv.latest_dataset_version
+    ver = version if isinstance(version, int) else inv.latest_dataset_version
     if ver <= 0:
         return TimelineRangeResponse(
             investigation_id=inv.investigation_id,
@@ -428,11 +466,12 @@ async def get_timeline_range(
             buckets=[]
         )
 
+    hours = step_hours if isinstance(step_hours, int) else 24
     return compute_timeline_range_and_buckets(
         investigation_id=inv.investigation_id,
         dataset_version=ver,
         records=dataset["records"],
-        step_hours=step_hours
+        step_hours=hours
     )
 
 @router.get("/analysis/{inv_id}/source/{source_id}", response_model=SourceComparison)
@@ -456,27 +495,12 @@ async def export_investigation_brief_pdf(
     version: Optional[int] = Query(None),
     timeline_cutoff: Optional[str] = Query(None)
 ):
-    inv = None
     if inv_id in ("current", "active", "default", None):
-        investigations = await list_investigations()
-        if investigations:
-            inv = next((i for i in investigations if i.status == "active"), investigations[0])
+        inv = await ensure_default_investigation_and_dataset()
     else:
         inv = await get_investigation(inv_id)
-
     if not inv:
-        # Create a default fallback investigation for demonstration
-        now_iso = datetime.now(timezone.utc).isoformat()
-        inv = Investigation(
-            investigation_id="INV-METRO-01",
-            title="Municipal Surveillance Outbreak Investigation",
-            geographic_area="Metro Health Jurisdiction",
-            notes="Active field survey",
-            status="active",
-            created_at=now_iso,
-            updated_at=now_iso,
-            latest_dataset_version=1
-        )
+        inv = await ensure_default_investigation_and_dataset()
 
     analysis = await get_epidemiological_analysis(inv.investigation_id, version, timeline_cutoff)
     pdf_bytes = generate_pdf_report(inv, analysis)
@@ -496,26 +520,12 @@ async def get_ai_explanation(
     version: Optional[int] = Query(None),
     timeline_cutoff: Optional[str] = Query(None)
 ):
-    inv = None
     if inv_id in ("current", "active", "default", None):
-        investigations = await list_investigations()
-        if investigations:
-            inv = next((i for i in investigations if i.status == "active"), investigations[0])
+        inv = await ensure_default_investigation_and_dataset()
     else:
         inv = await get_investigation(inv_id)
-
     if not inv:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        inv = Investigation(
-            investigation_id="INV-METRO-01",
-            title="Municipal Surveillance Outbreak Investigation",
-            geographic_area="Metro Health Jurisdiction",
-            notes="Active field survey",
-            status="active",
-            created_at=now_iso,
-            updated_at=now_iso,
-            latest_dataset_version=1
-        )
+        inv = await ensure_default_investigation_and_dataset()
         
     analysis = await get_epidemiological_analysis(inv.investigation_id, version, timeline_cutoff)
     return await generate_ai_explanation(analysis, inv.title)

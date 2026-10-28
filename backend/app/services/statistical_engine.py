@@ -5,21 +5,21 @@ from backend.app.schemas.models import SourceComparison, ConfidenceInterval
 # Provisional default coordinates for known synthetic and reference sources
 SOURCE_METADATA_REGISTRY = {
     "handpump_14": {
-        "name": "Handpump 14",
-        "type": "Public Handpump",
-        "coordinates": {"lat": 27.1751, "lng": 78.0421},
+        "name": "Handpump #14",
+        "type": "Public Community Handpump",
+        "coordinates": {"lat": 23.8342, "lng": 78.7385},
         "is_synthetic": True
     },
     "well_3": {
-        "name": "Well 3",
+        "name": "Well #3",
         "type": "Shallow Dug Well",
-        "coordinates": {"lat": 27.1785, "lng": 78.0465},
+        "coordinates": {"lat": 23.8315, "lng": 78.7302},
         "is_synthetic": True
     },
     "community_tank_2": {
-        "name": "Community Tank 2",
-        "type": "Elevated Community Tank",
-        "coordinates": {"lat": 27.1712, "lng": 78.0388},
+        "name": "Community Storage Tank #2",
+        "type": "Elevated Reservoir Tank",
+        "coordinates": {"lat": 23.8455, "lng": 78.7501},
         "is_synthetic": True
     }
 }
@@ -90,6 +90,21 @@ def calculate_source_statistics(
             relative_risk = 0.0
     elif exposed_ar is not None and unexposed_ar is not None and unexposed_ar > 0:
         relative_risk = round(exposed_ar / unexposed_ar, 2)
+
+    # Risk Difference and Population Attributable Fraction
+    risk_diff: Optional[float] = None
+    risk_diff_pct: Optional[str] = None
+    paf: Optional[float] = None
+    if exposed_ar is not None and unexposed_ar is not None:
+        risk_diff = round(exposed_ar - unexposed_ar, 4)
+        risk_diff_pct = f"{risk_diff * 100:.1f}%"
+        total_eval = n1 + n0
+        if total_eval > 0:
+            total_ar = (a + c) / total_eval
+            if total_ar > 0 and total_ar >= unexposed_ar:
+                paf = round((total_ar - unexposed_ar) / total_ar, 4)
+            else:
+                paf = 0.0
         
     # 95% Confidence Interval for Relative Risk (log-RR Wald method)
     # SE(log RR) = sqrt(1/a - 1/(a+b) + 1/c - 1/(c+d))
@@ -206,6 +221,9 @@ def calculate_source_statistics(
         unexposed_attack_rate_pct=unexposed_ar_pct,
         unknown_exposure_count=unknown_exposure_count,
         relative_risk=relative_risk,
+        risk_difference=risk_diff,
+        risk_difference_pct=risk_diff_pct,
+        population_attributable_fraction=paf,
         confidence_interval_95=ci,
         ci_calculable=ci_calculable,
         ci_limitation_reason=ci_limitation_reason,
