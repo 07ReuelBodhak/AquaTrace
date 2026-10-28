@@ -18,46 +18,13 @@ interface ResponsePlannerProps {
   sources: Array<{ source_id: string; source_name: string }>;
 }
 
-const INITIAL_DEMO_TASKS: ResponseTask[] = [
-  {
-    task_id: "TASK-01",
-    title: "Issue Targeted Boil-Water Advisory (Sector 4 North)",
-    description: "Post advisory notices in public squares surrounding Handpump #14.",
-    assigned_role: "Community Health Liaison",
-    priority: "high",
-    status: "in_progress",
-    due_date: "Today, 18:00 UTC",
-    associated_source_id: "handpump_14",
-  },
-  {
-    task_id: "TASK-02",
-    title: "Sanitary Inspection & Membrane Filter Water Sampling",
-    description: "Collect 500mL duplicate samples from Handpump #14 for coliform and cholera culture.",
-    assigned_role: "Water Quality Field Tech",
-    priority: "high",
-    status: "pending",
-    due_date: "Tomorrow, 08:00 UTC",
-    associated_source_id: "handpump_14",
-  },
-  {
-    task_id: "TASK-03",
-    title: "Secondary Inspection of Substation-7 Junction Pipe",
-    description: "Verify residual chlorine levels and check for pressure drops.",
-    assigned_role: "Municipal Water Engineer",
-    priority: "medium",
-    status: "pending",
-    due_date: "Oct 30, 2026",
-    associated_source_id: "substation_07",
-  },
-];
-
 export default function ResponsePlanner({ sources }: ResponsePlannerProps) {
-  const [tasks, setTasks] = useState<ResponseTask[]>(INITIAL_DEMO_TASKS);
+  const [tasks, setTasks] = useState<ResponseTask[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newRole, setNewRole] = useState("Field Sampling Officer");
   const [newPriority, setNewPriority] = useState<"high" | "medium" | "low">("high");
-  const [newSourceId, setNewSourceId] = useState(sources[0]?.source_id || "handpump_14");
+  const [newSourceId, setNewSourceId] = useState(sources[0]?.source_id || "source_lead");
 
   useEffect(() => {
     api.getTasks("current")
@@ -73,10 +40,71 @@ export default function ResponsePlanner({ sources }: ResponsePlannerProps) {
             due_date: t.due_date ? String(t.due_date) : undefined,
             associated_source_id: t.associated_source_id ? String(t.associated_source_id) : undefined,
           })));
+        } else {
+          setTasks([]);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        setTasks([]);
+      });
   }, []);
+
+  const handleSeedSuggestedTasks = async () => {
+    if (!sources || sources.length === 0) return;
+    const topSource = sources[0];
+    const initialInterventions = [
+      {
+        title: `Physical Sanitary Inspection of ${topSource.source_name}`,
+        description: `Inspect wellhead casing, perimeter drainage, and sanitary seal for ${topSource.source_name}.`,
+        assigned_role: "Water Quality Field Tech",
+        priority: "high" as const,
+        due_date: "Immediate (Within 4h)",
+        associated_source_id: topSource.source_id,
+      },
+      {
+        title: `Collect 500mL Duplicate Samples at ${topSource.source_name}`,
+        description: "Perform membrane filtration culture for fecal coliforms and biological contaminants.",
+        assigned_role: "Microbiology Field Specialist",
+        priority: "high" as const,
+        due_date: "Today, End of Shift",
+        associated_source_id: topSource.source_id,
+      },
+    ];
+
+    for (const item of initialInterventions) {
+      try {
+        const created = await api.createTask(item, "current");
+        setTasks((prev) => [
+          ...prev,
+          {
+            task_id: (created as Record<string, unknown>).task_id as string || `TASK-${Date.now()}`,
+            title: item.title,
+            description: item.description,
+            assigned_role: item.assigned_role,
+            priority: item.priority,
+            status: "pending",
+            due_date: item.due_date,
+            associated_source_id: item.associated_source_id,
+          },
+        ]);
+      } catch {
+        // Fallback local update
+        setTasks((prev) => [
+          ...prev,
+          {
+            task_id: `TASK-0${prev.length + 1}`,
+            title: item.title,
+            description: item.description,
+            assigned_role: item.assigned_role,
+            priority: item.priority,
+            status: "pending",
+            due_date: item.due_date,
+            associated_source_id: item.associated_source_id,
+          },
+        ]);
+      }
+    }
+  };
 
   const handleToggleStatus = async (taskId: string, currentStatus: string) => {
     let nextStatus = "pending";
@@ -153,62 +181,79 @@ export default function ResponsePlanner({ sources }: ResponsePlannerProps) {
 
       {/* Task List */}
       <div className="space-y-3">
-        {tasks.map((task) => {
-          const isDone = task.status === "completed";
-          const inProg = task.status === "in_progress";
-
-          return (
-            <div
-              key={task.task_id}
-              className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
-                isDone
-                  ? "bg-canvas/50 border-borderline opacity-70"
-                  : inProg
-                  ? "bg-aqua/20 border-teal/40 shadow-subtle"
-                  : "bg-white border-borderline hover:border-teal/30"
-              }`}
-            >
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-canvas border border-borderline text-muted">
-                    {task.task_id}
-                  </span>
-                  <span className={`text-xs font-bold ${isDone ? "line-through text-muted" : "text-navy"}`}>
-                    {task.title}
-                  </span>
-                  {task.priority === "high" && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-danger/10 text-danger border border-danger/30">
-                      HIGH PRIORITY
-                    </span>
-                  )}
-                </div>
-
-                <div className="text-[11px] text-muted flex flex-wrap items-center gap-3">
-                  <span>Assigned: <strong className="text-navy">{task.assigned_role}</strong></span>
-                  <span>&bull;</span>
-                  <span>Target Source: <strong className="text-teal font-mono">{task.associated_source_id}</strong></span>
-                  <span>&bull;</span>
-                  <span>Due: {task.due_date}</span>
-                </div>
-              </div>
-
-              {/* Status Toggle Button */}
+        {tasks.length === 0 ? (
+          <div className="p-8 text-center bg-canvas rounded-xl border border-dashed border-borderline space-y-3">
+            <p className="text-xs text-muted">
+              No containment tasks logged yet. Add interventions manually or generate recommendations from evaluated candidate water sources.
+            </p>
+            {sources && sources.length > 0 && (
               <button
                 type="button"
-                onClick={() => handleToggleStatus(task.task_id, task.status)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+                onClick={handleSeedSuggestedTasks}
+                className="px-4 py-2 bg-white border border-teal/40 text-teal-dark hover:bg-aqua/40 rounded-lg text-xs font-bold transition-all shadow-subtle"
+              >
+                + Generate Containment Tasks for Detected Sources
+              </button>
+            )}
+          </div>
+        ) : (
+          tasks.map((task) => {
+            const isDone = task.status === "completed";
+            const inProg = task.status === "in_progress";
+
+            return (
+              <div
+                key={task.task_id}
+                className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
                   isDone
-                    ? "bg-success/10 text-success border border-success/30 hover:bg-success/20"
+                    ? "bg-canvas/50 border-borderline opacity-70"
                     : inProg
-                    ? "bg-teal text-white shadow-subtle hover:bg-teal-dark"
-                    : "bg-canvas border border-borderline text-navy hover:bg-aqua/40"
+                    ? "bg-aqua/20 border-teal/40 shadow-subtle"
+                    : "bg-white border-borderline hover:border-teal/30"
                 }`}
               >
-                {isDone ? "Completed [✓]" : inProg ? "In Progress [→]" : "Mark In Progress"}
-              </button>
-            </div>
-          );
-        })}
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-canvas border border-borderline text-muted">
+                      {task.task_id}
+                    </span>
+                    <span className={`text-xs font-bold ${isDone ? "line-through text-muted" : "text-navy"}`}>
+                      {task.title}
+                    </span>
+                    {task.priority === "high" && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-danger/10 text-danger border border-danger/30">
+                        HIGH PRIORITY
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="text-[11px] text-muted flex flex-wrap items-center gap-3">
+                    <span>Assigned: <strong className="text-navy">{task.assigned_role}</strong></span>
+                    <span>&bull;</span>
+                    <span>Target Source: <strong className="text-teal font-mono">{task.associated_source_id}</strong></span>
+                    <span>&bull;</span>
+                    <span>Due: {task.due_date}</span>
+                  </div>
+                </div>
+
+                {/* Status Toggle Button */}
+                <button
+                  type="button"
+                  onClick={() => handleToggleStatus(task.task_id, task.status)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+                    isDone
+                      ? "bg-success/10 text-success border border-success/30 hover:bg-success/20"
+                      : inProg
+                      ? "bg-teal text-white shadow-subtle hover:bg-teal-dark"
+                      : "bg-canvas border border-borderline text-navy hover:bg-aqua/40"
+                  }`}
+                >
+                  {isDone ? "Completed [✓]" : inProg ? "In Progress [→]" : "Mark In Progress"}
+                </button>
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* Add Task Modal */}

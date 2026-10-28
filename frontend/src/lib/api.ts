@@ -236,6 +236,34 @@ export const api = {
   },
 
   /**
+   * Clears the active dataset, resetting to empty state
+   * POST /api/v1/datasets/clear
+   */
+  async clearDataset(): Promise<{ status: string; message: string; dataset_version: number }> {
+    const res = await fetch(`${API_BASE_URL}/datasets/clear`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    return handleResponse(res);
+  },
+
+  /**
+   * Explicitly loads benchmark sample dataset
+   * POST /api/v1/datasets/seed-benchmark
+   */
+  async seedBenchmarkDataset(): Promise<{ status: string; message: string; record_count: number; dataset_id: string }> {
+    const res = await fetch(`${API_BASE_URL}/datasets/seed-benchmark`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    return handleResponse(res);
+  },
+
+  /**
    * Current Dataset Metadata endpoint
    * GET /api/v1/datasets/current
    */

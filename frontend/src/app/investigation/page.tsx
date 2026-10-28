@@ -7,29 +7,18 @@ import { EpicurveBucketItem } from "./components/EpicurveChart";
 import CandidateSourceMap from "./components/CandidateSourceMap";
 import ResponsePlanner from "./components/ResponsePlanner";
 
-const DEFAULT_FALLBACK_BUCKETS: EpicurveBucketItem[] = [
-  { timestamp: "2026-10-10T23:59:59Z", date_label: "Oct 10", case_count: 3, cumulative_cases: 3, survey_count: 15 },
-  { timestamp: "2026-10-11T23:59:59Z", date_label: "Oct 11", case_count: 6, cumulative_cases: 9, survey_count: 22 },
-  { timestamp: "2026-10-12T23:59:59Z", date_label: "Oct 12", case_count: 11, cumulative_cases: 20, survey_count: 34 },
-  { timestamp: "2026-10-13T23:59:59Z", date_label: "Oct 13", case_count: 18, cumulative_cases: 38, survey_count: 45 },
-  { timestamp: "2026-10-14T23:59:59Z", date_label: "Oct 14", case_count: 22, cumulative_cases: 60, survey_count: 55 },
-  { timestamp: "2026-10-15T23:59:59Z", date_label: "Oct 15", case_count: 7, cumulative_cases: 67, survey_count: 35 },
-  { timestamp: "2026-10-16T23:59:59Z", date_label: "Oct 16", case_count: 3, cumulative_cases: 70, survey_count: 20 },
-  { timestamp: "2026-10-17T23:59:59Z", date_label: "Oct 17", case_count: 2, cumulative_cases: 72, survey_count: 14 },
-];
-
 export default function InvestigationDashboard() {
-  const [investigationTitle, setInvestigationTitle] = useState<string>("Sector 4B Outbreak Investigation");
-  const [geographicArea, setGeographicArea] = useState<string>("Metro Health Surveillance District");
-  const [datasetVersion, setDatasetVersion] = useState<number>(1);
+  const [investigationTitle, setInvestigationTitle] = useState<string>("Outbreak Surveillance Platform");
+  const [geographicArea, setGeographicArea] = useState<string>("Surveillance District");
+  const [datasetVersion, setDatasetVersion] = useState<number>(0);
   const [activeCutoff, setActiveCutoff] = useState<string | null>(null);
-  const [timelineBuckets, setTimelineBuckets] = useState<EpicurveBucketItem[]>(DEFAULT_FALLBACK_BUCKETS);
+  const [timelineBuckets, setTimelineBuckets] = useState<EpicurveBucketItem[]>([]);
 
   // Authoritative State Hydrated from Backend API
   const [sources, setSources] = useState<SourceAnalysisResult[]>([]);
-  const [totalSurveyed, setTotalSurveyed] = useState<number>(240);
-  const [totalCases, setTotalCases] = useState<number>(72);
-  const [selectedSourceId, setSelectedSourceId] = useState<string>("handpump_14");
+  const [totalSurveyed, setTotalSurveyed] = useState<number>(0);
+  const [totalCases, setTotalCases] = useState<number>(0);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
 
   // Filtering & Sorting
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -51,9 +40,8 @@ export default function InvestigationDashboard() {
     message: string;
     datasetId?: string;
   }>({
-    state: "success",
-    message: "Dynamic epidemiological dataset active. Connected to deterministic backend.",
-    datasetId: "DS-ACTIVE",
+    state: "idle",
+    message: "Awaiting field surveillance survey. Drag & drop docs/synthetic_outbreak.csv below or click 'Load Benchmark Dataset'.",
   });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -68,23 +56,28 @@ export default function InvestigationDashboard() {
       ]);
 
       if (dsMeta) {
-        setInvestigationTitle(dsMeta.title || "Sector 4B Outbreak Investigation");
-        setGeographicArea(dsMeta.geographic_area || "Metro Health Surveillance District");
-        setDatasetVersion(dsMeta.latest_dataset_version || 1);
+        setInvestigationTitle(dsMeta.title || "Outbreak Surveillance Platform");
+        setGeographicArea(dsMeta.geographic_area || "Surveillance District");
+        setDatasetVersion(dsMeta.latest_dataset_version || 0);
       }
 
-      if (rangeData && rangeData.buckets && rangeData.buckets.length > 0) {
+      if (rangeData && rangeData.buckets) {
         setTimelineBuckets(rangeData.buckets);
+      } else {
+        setTimelineBuckets([]);
       }
 
       if (analysisData) {
-        setTotalSurveyed(analysisData.eligible_records || analysisData.total_records || 240);
-        setTotalCases(analysisData.ill_count || 72);
+        setTotalSurveyed(analysisData.eligible_records ?? analysisData.total_records ?? 0);
+        setTotalCases(analysisData.ill_count ?? 0);
         if (analysisData.sources && analysisData.sources.length > 0) {
           setSources(analysisData.sources);
           if (!analysisData.sources.some((s) => s.source_id === selectedSourceId)) {
             setSelectedSourceId(analysisData.sources[0].source_id);
           }
+        } else {
+          setSources([]);
+          setSelectedSourceId("");
         }
       }
     } catch (err) {
@@ -107,8 +100,8 @@ export default function InvestigationDashboard() {
     api.getAnalysis("current", activeCutoff)
       .then((analysisData) => {
         if (analysisData) {
-          setTotalSurveyed(analysisData.eligible_records);
-          setTotalCases(analysisData.ill_count);
+          setTotalSurveyed(analysisData.eligible_records ?? 0);
+          setTotalCases(analysisData.ill_count ?? 0);
           if (analysisData.sources && analysisData.sources.length > 0) {
             setSources(analysisData.sources);
           }
@@ -154,7 +147,7 @@ export default function InvestigationDashboard() {
       }
     } catch {
       setAiDraft(
-        "Epidemiological Synthesis: Handpump #14 demonstrates the primary statistical signal (Relative Risk = 4.00, 95% CI: 2.64 - 6.06) with 60.0% attack rate among exposed versus 15.0% among unexposed. Physical sanitary survey and bacteriological sampling are recommended prior to regulatory action."
+        "Epidemiological Synthesis: Primary statistical evaluation active. Physical sanitary survey and bacteriological sampling are recommended prior to regulatory action."
       );
       setAiStatus("Local Deterministic Fallback");
     } finally {
@@ -196,19 +189,49 @@ export default function InvestigationDashboard() {
     }
   };
 
+  // Reset / Clear Active Dataset
+  const handleClearDataset = async () => {
+    setActiveCutoff(null);
+    setUploadStatus({
+      state: "uploading",
+      message: "Resetting dashboard to empty state...",
+    });
+    try {
+      await api.clearDataset();
+      await loadDynamicBackendData(null);
+      setUploadStatus({
+        state: "idle",
+        message: "Active dataset cleared. Dashboard reset to empty state. Ready for new CSV survey.",
+      });
+    } catch (err) {
+      setUploadStatus({
+        state: "error",
+        message: err instanceof Error ? err.message : "Failed to clear dataset.",
+      });
+    }
+  };
+
   // Reset / Reload Demo Outbreak
   const handleLoadDemoData = async () => {
     setActiveCutoff(null);
     setUploadStatus({
       state: "uploading",
-      message: "Reloading canonical outbreak dataset from backend...",
+      message: "Loading canonical benchmark outbreak dataset (docs/synthetic_outbreak.csv)...",
     });
-    await loadDynamicBackendData(null);
-    setUploadStatus({
-      state: "success",
-      message: "Baseline Outbreak Dataset active. 240 verified records across Handpump #14, Well #3, and Community Tank #2.",
-      datasetId: "DS-SYNTHETIC-2026",
-    });
+    try {
+      const res = await api.seedBenchmarkDataset();
+      await loadDynamicBackendData(null);
+      setUploadStatus({
+        state: "success",
+        message: `Benchmark Outbreak Dataset active. ${res.record_count || 240} verified participant records loaded from server.`,
+        datasetId: res.dataset_id,
+      });
+    } catch (err) {
+      setUploadStatus({
+        state: "error",
+        message: err instanceof Error ? err.message : "Failed to load benchmark dataset.",
+      });
+    }
   };
 
   const filteredSources = useMemo(() => {
@@ -249,25 +272,10 @@ export default function InvestigationDashboard() {
   }, [sources, searchQuery, priorityFilter, sortOrder, onlySignificant]);
 
   const selectedSource = useMemo(() => {
+    if (sources.length === 0) return null;
     return (
       sources.find((s) => s.source_id === selectedSourceId) ||
-      sources[0] || {
-        source_id: "handpump_14",
-        source_name: "Handpump #14",
-        source_type: "Public Community Handpump",
-        contingency_table: { a: 42, b: 28, c: 24, d: 136, n_exposed: 70, n_unexposed: 160, total: 230, zero_cell_corrected: false },
-        risk_metrics: {
-          attack_rate_exposed: 0.60,
-          attack_rate_unexposed: 0.15,
-          attack_rate_overall: 0.287,
-          relative_risk: 4.00,
-          risk_difference: 0.45,
-          population_attributable_fraction: 0.477,
-          ci_lower: 2.64,
-          ci_upper: 6.06,
-          priority_status: "HIGH_PRIORITY",
-        },
-      }
+      sources[0]
     );
   }, [sources, selectedSourceId]);
 
@@ -421,12 +429,23 @@ export default function InvestigationDashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            {datasetVersion > 0 && (
+              <button
+                type="button"
+                onClick={handleClearDataset}
+                className="px-3.5 py-1.5 bg-canvas hover:bg-slate-200 text-muted hover:text-navy border border-borderline rounded-lg text-xs font-semibold transition-all shadow-subtle"
+                title="Reset active dataset back to empty state"
+              >
+                Reset / Clear Data
+              </button>
+            )}
             <button
               type="button"
               onClick={handleLoadDemoData}
               className="px-3.5 py-1.5 bg-aqua/50 hover:bg-aqua text-teal-dark border border-teal/20 rounded-lg text-xs font-bold transition-all shadow-subtle"
+              title="Loads the 240-record verified benchmark dataset from docs/synthetic_outbreak.csv"
             >
-              Reload Baseline Outbreak
+              Load Benchmark Dataset
             </button>
             <button
               type="button"
@@ -601,7 +620,7 @@ export default function InvestigationDashboard() {
                     </tr>
                   ) : (
                     filteredSources.map((s) => {
-                      const isSelected = selectedSource.source_id === s.source_id;
+                      const isSelected = selectedSourceId === s.source_id;
                       const { risk_metrics, contingency_table } = s;
 
                       return (
@@ -665,84 +684,100 @@ export default function InvestigationDashboard() {
 
           {/* Side Inspection Drawer */}
           <div className="lg:col-span-4 bg-white border border-borderline rounded-2xl p-6 shadow-card space-y-5 sticky top-24">
-            <div className="flex items-start justify-between border-b border-borderline pb-4">
-              <div>
-                <span className="text-[10px] font-bold text-teal uppercase tracking-wider block">
-                  Detailed Evidence Drawer
-                </span>
-                <h3 className="text-lg font-bold text-navy mt-0.5">
-                  {selectedSource.source_name}
-                </h3>
-                <span className="text-xs text-muted">{selectedSource.source_type}</span>
+            {!selectedSource ? (
+              <div className="text-center py-10 space-y-3">
+                <div className="w-10 h-10 mx-auto rounded-full bg-canvas border border-borderline flex items-center justify-center text-muted">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <h4 className="font-bold text-navy text-sm">Detailed Evidence Drawer</h4>
+                <p className="text-xs text-muted max-w-xs mx-auto">
+                  No candidate source selected. Ingest a survey CSV or load the benchmark dataset to evaluate contingency tables and risk indicators.
+                </p>
               </div>
-              <div>{renderPriorityBadge(selectedSource.risk_metrics.priority_status)}</div>
-            </div>
+            ) : (
+              <>
+                <div className="flex items-start justify-between border-b border-borderline pb-4">
+                  <div>
+                    <span className="text-[10px] font-bold text-teal uppercase tracking-wider block">
+                      Detailed Evidence Drawer
+                    </span>
+                    <h3 className="text-lg font-bold text-navy mt-0.5">
+                      {selectedSource.source_name}
+                    </h3>
+                    <span className="text-xs text-muted">{selectedSource.source_type}</span>
+                  </div>
+                  <div>{renderPriorityBadge(selectedSource.risk_metrics.priority_status)}</div>
+                </div>
 
-            {/* Plain English Plain-Language Explanation */}
-            <div className="p-4 rounded-xl bg-aqua/40 border border-teal/20 text-xs text-main space-y-1.5">
-              <span className="font-bold text-navy uppercase text-[10px] tracking-wide block">
-                Evidence Interpretation
-              </span>
-              <p className="leading-relaxed">
-                In this cohort, illness was about{" "}
-                <strong className="text-navy">
-                  {selectedSource.risk_metrics.relative_risk !== null
-                    ? `${selectedSource.risk_metrics.relative_risk.toFixed(1)} times`
-                    : "N/A"}
-                </strong>{" "}
-                as common among people who drank from this source compared to those who did not.
-              </p>
-              <p className="text-[11px] text-muted leading-relaxed">
-                * Note: Statistical association indicates strong correlation and prioritizes physical inspection; it does not replace laboratory water testing.
-              </p>
-            </div>
+                {/* Plain English Plain-Language Explanation */}
+                <div className="p-4 rounded-xl bg-aqua/40 border border-teal/20 text-xs text-main space-y-1.5">
+                  <span className="font-bold text-navy uppercase text-[10px] tracking-wide block">
+                    Evidence Interpretation
+                  </span>
+                  <p className="leading-relaxed">
+                    In this cohort, illness was about{" "}
+                    <strong className="text-navy">
+                      {selectedSource.risk_metrics.relative_risk !== null
+                        ? `${selectedSource.risk_metrics.relative_risk.toFixed(1)} times`
+                        : "N/A"}
+                    </strong>{" "}
+                    as common among people who drank from this source compared to those who did not.
+                  </p>
+                  <p className="text-[11px] text-muted leading-relaxed">
+                    * Note: Statistical association indicates strong correlation and prioritizes physical inspection; it does not replace laboratory water testing.
+                  </p>
+                </div>
 
-            {/* 2x2 Matrix Grid */}
-            <div className="space-y-2">
-              <span className="text-xs font-bold text-navy uppercase tracking-wider block">
-                2x2 Contingency Matrix (a, b, c, d)
-              </span>
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                <div className="p-3 bg-canvas border border-borderline rounded-lg">
-                  <span className="text-[10px] text-muted block">Exposed &amp; Ill (a)</span>
-                  <span className="text-lg font-bold text-navy">{selectedSource.contingency_table.a}</span>
+                {/* 2x2 Matrix Grid */}
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-navy uppercase tracking-wider block">
+                    2x2 Contingency Matrix (a, b, c, d)
+                  </span>
+                  <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                    <div className="p-3 bg-canvas border border-borderline rounded-lg">
+                      <span className="text-[10px] text-muted block">Exposed &amp; Ill (a)</span>
+                      <span className="text-lg font-bold text-navy">{selectedSource.contingency_table.a}</span>
+                    </div>
+                    <div className="p-3 bg-canvas border border-borderline rounded-lg">
+                      <span className="text-[10px] text-muted block">Exposed &amp; Well (b)</span>
+                      <span className="text-lg font-bold text-muted">{selectedSource.contingency_table.b}</span>
+                    </div>
+                    <div className="p-3 bg-canvas border border-borderline rounded-lg">
+                      <span className="text-[10px] text-muted block">Unexposed &amp; Ill (c)</span>
+                      <span className="text-lg font-bold text-navy">{selectedSource.contingency_table.c}</span>
+                    </div>
+                    <div className="p-3 bg-canvas border border-borderline rounded-lg">
+                      <span className="text-[10px] text-muted block">Unexposed &amp; Well (d)</span>
+                      <span className="text-lg font-bold text-muted">{selectedSource.contingency_table.d}</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="p-3 bg-canvas border border-borderline rounded-lg">
-                  <span className="text-[10px] text-muted block">Exposed &amp; Well (b)</span>
-                  <span className="text-lg font-bold text-muted">{selectedSource.contingency_table.b}</span>
-                </div>
-                <div className="p-3 bg-canvas border border-borderline rounded-lg">
-                  <span className="text-[10px] text-muted block">Unexposed &amp; Ill (c)</span>
-                  <span className="text-lg font-bold text-navy">{selectedSource.contingency_table.c}</span>
-                </div>
-                <div className="p-3 bg-canvas border border-borderline rounded-lg">
-                  <span className="text-[10px] text-muted block">Unexposed &amp; Well (d)</span>
-                  <span className="text-lg font-bold text-muted">{selectedSource.contingency_table.d}</span>
-                </div>
-              </div>
-            </div>
 
-            {/* Detailed Risk Indicators */}
-            <div className="pt-2 border-t border-borderline space-y-2 text-xs">
-              <div className="flex justify-between py-1 border-b border-borderline">
-                <span className="text-muted">Risk Difference (Attributable Risk):</span>
-                <span className="font-mono font-bold text-navy">
-                  {(selectedSource.risk_metrics.risk_difference * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-borderline">
-                <span className="text-muted">Population Attributable Fraction (PAF):</span>
-                <span className="font-mono font-bold text-navy">
-                  {(selectedSource.risk_metrics.population_attributable_fraction * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted">Zero-Cell Correction:</span>
-                <span className="font-mono text-muted">
-                  {selectedSource.contingency_table.zero_cell_corrected ? "Applied (+0.5)" : "None Needed"}
-                </span>
-              </div>
-            </div>
+                {/* Detailed Risk Indicators */}
+                <div className="pt-2 border-t border-borderline space-y-2 text-xs">
+                  <div className="flex justify-between py-1 border-b border-borderline">
+                    <span className="text-muted">Risk Difference (Attributable Risk):</span>
+                    <span className="font-mono font-bold text-navy">
+                      {(selectedSource.risk_metrics.risk_difference * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-borderline">
+                    <span className="text-muted">Population Attributable Fraction (PAF):</span>
+                    <span className="font-mono font-bold text-navy">
+                      {(selectedSource.risk_metrics.population_attributable_fraction * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-muted">Zero-Cell Correction:</span>
+                    <span className="font-mono text-muted">
+                      {selectedSource.contingency_table.zero_cell_corrected ? "Applied (+0.5)" : "None Needed"}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </section>

@@ -170,6 +170,12 @@ async def import_csv_dataset(
         warnings_count=val_resp.warned_rows
     )
     
+    # Update investigation title and version
+    inv.latest_dataset_version = new_version
+    inv.title = f"Outbreak Surveillance ({upload_file.filename or 'Field Survey'})"
+    inv.updated_at = datetime.now(timezone.utc).isoformat()
+    await save_investigation(inv)
+    
     analysis_cache.invalidate_investigation(inv.investigation_id)
 
     return {
@@ -183,15 +189,79 @@ async def import_csv_dataset(
         "detected_sources": val_resp.detected_sources,
         "source_ids": val_resp.detected_sources,
         "warnings_count": val_resp.warned_rows,
-        "message": f"Successfully imported {len(accepted_records)} verified participant records."
+        "message": f"Successfully imported {len(accepted_records)} verified participant records from {upload_file.filename or 'survey file'}."
     }
 
 from pathlib import Path
 
+@router.post("/datasets/clear")
+async def clear_active_dataset(
+    investigation_id: Optional[str] = Form("current")
+):
+    """
+    Clears the active investigation dataset back to an empty state awaiting new survey upload.
+    """
+    inv = await ensure_default_investigation_and_dataset()
+    inv.latest_dataset_version = 0
+    inv.title = "Awaiting Outbreak Survey Data"
+    inv.geographic_area = "District Surveillance Zone"
+    inv.updated_at = datetime.now(timezone.utc).isoformat()
+    await save_investigation(inv)
+    analysis_cache.invalidate_investigation(inv.investigation_id)
+    return {
+        "status": "success",
+        "message": "Active dataset cleared. Dashboard returned to empty state ready for CSV upload.",
+        "dataset_version": 0
+    }
+
+@router.post("/datasets/seed-benchmark")
+async def seed_benchmark_dataset():
+    """
+    Explicitly loads the 240-participant benchmark outbreak dataset (data/synthetic_outbreak.csv).
+    """
+    inv = await ensure_default_investigation_and_dataset()
+    possible_paths = [
+        Path(__file__).resolve().parent.parent.parent.parent / "data" / "synthetic_outbreak.csv",
+        Path("data/synthetic_outbreak.csv"),
+        Path("../data/synthetic_outbreak.csv"),
+        Path("docs/synthetic_outbreak.csv"),
+    ]
+    csv_path = next((p for p in possible_paths if p.exists()), None)
+    if not csv_path:
+        raise HTTPException(status_code=404, detail="Benchmark CSV file not found on server.")
+    
+    content = csv_path.read_bytes()
+    val_resp, accepted_records = parse_and_validate_csv(content, "synthetic_outbreak.csv")
+    if not val_resp.is_valid:
+        raise HTTPException(status_code=400, detail="Benchmark dataset validation failed.")
+    
+    new_version = inv.latest_dataset_version + 1
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await save_dataset_version(
+        inv_id=inv.investigation_id,
+        version=new_version,
+        records=accepted_records,
+        detected_sources=val_resp.detected_sources,
+        data_origin="Synthetic Outbreak Benchmark (CDC/WHO Format)",
+        warnings_count=val_resp.warned_rows
+    )
+    inv.title = "Outbreak Surveillance (Benchmark Dataset)"
+    inv.geographic_area = "Central Surveillance District (Sagar Sector)"
+    inv.latest_dataset_version = new_version
+    inv.updated_at = now_iso
+    await save_investigation(inv)
+    analysis_cache.invalidate_investigation(inv.investigation_id)
+    return {
+        "status": "success",
+        "message": f"Successfully loaded benchmark outbreak dataset ({len(accepted_records)} records).",
+        "dataset_version": new_version,
+        "dataset_id": f"{inv.investigation_id}-v{new_version}",
+        "record_count": len(accepted_records)
+    }
+
 async def ensure_default_investigation_and_dataset() -> Investigation:
     """
-    Ensures an active investigation exists and loads the baseline 240-participant
-    outbreak dataset (data/synthetic_outbreak.csv) if no dataset has been imported yet.
+    Ensures an active investigation exists. Does not auto-inject datasets unless imported or requested.
     """
     investigations = await list_investigations()
     active_inv = None
@@ -202,8 +272,8 @@ async def ensure_default_investigation_and_dataset() -> Investigation:
     if not active_inv:
         active_inv = Investigation(
             investigation_id="INV-DEFAULT",
-            title="Sector 4B Outbreak Investigation",
-            geographic_area="Metro Health Surveillance District",
+            title="Awaiting Outbreak Survey Data",
+            geographic_area="District Surveillance Zone",
             notes="Active waterborne outbreak surveillance investigation",
             status="active",
             created_at=now_iso,
@@ -211,32 +281,6 @@ async def ensure_default_investigation_and_dataset() -> Investigation:
             latest_dataset_version=0
         )
         await save_investigation(active_inv)
-
-    if active_inv.latest_dataset_version <= 0:
-        possible_paths = [
-            Path(__file__).resolve().parent.parent.parent.parent / "data" / "synthetic_outbreak.csv",
-            Path("data/synthetic_outbreak.csv"),
-            Path("../data/synthetic_outbreak.csv")
-        ]
-        csv_path = next((p for p in possible_paths if p.exists()), None)
-        if csv_path:
-            try:
-                content = csv_path.read_bytes()
-                val_resp, accepted_records = parse_and_validate_csv(content, "synthetic_outbreak.csv")
-                if val_resp.is_valid and accepted_records:
-                    await save_dataset_version(
-                        inv_id=active_inv.investigation_id,
-                        version=1,
-                        records=accepted_records,
-                        detected_sources=val_resp.detected_sources,
-                        data_origin="Synthetic Outbreak Baseline 2026",
-                        warnings_count=val_resp.warned_rows
-                    )
-                    active_inv.latest_dataset_version = 1
-                    active_inv.updated_at = now_iso
-                    await save_investigation(active_inv)
-            except Exception:
-                pass
 
     return active_inv
 
@@ -401,7 +445,21 @@ async def get_epidemiological_analysis(
     ver = version if isinstance(version, int) else inv.latest_dataset_version
     cutoff = timeline_cutoff if isinstance(timeline_cutoff, str) else None
     if ver <= 0:
-        raise HTTPException(status_code=400, detail="No dataset imported for this investigation yet.")
+        return AnalysisResponse(
+            investigation_id=inv.investigation_id,
+            dataset_version=0,
+            calculated_at=datetime.now(timezone.utc).isoformat(),
+            timeline_cutoff=None,
+            is_timeline_filtered=False,
+            total_records=0,
+            eligible_records=0,
+            ill_count=0,
+            not_ill_count=0,
+            unknown_illness_count=0,
+            sources=[],
+            methodology_note="Awaiting dataset upload",
+            statistical_method_version="1.0.0-deterministic"
+        )
 
     # Check cache
     cached = analysis_cache.get(inv.investigation_id, ver, cutoff)

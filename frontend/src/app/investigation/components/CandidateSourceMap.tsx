@@ -107,7 +107,7 @@ export default function CandidateSourceMap({
             </button>
           </div>
           <span className="text-xs font-mono text-muted bg-canvas px-3 py-1.5 rounded-lg border border-borderline hidden sm:inline-block">
-            Sector 4B Grid (23.83&deg; N, 78.74&deg; E)
+            {bounds ? `Surveillance Grid (${bounds.minLat.toFixed(2)}° N, ${bounds.minLng.toFixed(2)}° E)` : "Surveillance Grid"}
           </span>
         </div>
       </div>
@@ -178,7 +178,7 @@ export default function CandidateSourceMap({
             {/* Geographical North and Compass Legend */}
             <div className="absolute top-2 left-2 bg-white/90 border border-borderline px-2 py-1 rounded text-[10px] font-mono text-muted flex items-center gap-1 shadow-subtle z-0">
               <span className="font-bold text-navy">▲ N</span>
-              <span>Grid Sector 4B</span>
+              <span>Local Grid Coordinates</span>
             </div>
 
             {/* Anchored Water Source Pins */}

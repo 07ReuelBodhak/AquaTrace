@@ -52,34 +52,10 @@ export default function InvestigationLayout({
             <svg className="w-3.5 h-3.5 text-teal" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
-            <span>DR. VANCE (OFFICER-741)</span>
+            <span>FIELD OFFICER WORKSTATION</span>
           </Link>
         </div>
       </header>
-
-      {/* Sub-header Meta Command Ribbon */}
-      <section className="w-full bg-white border-b border-borderline px-6 py-2.5 flex flex-wrap justify-between items-center text-xs">
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
-          <div className="flex items-center space-x-1.5">
-            <span className="text-muted font-medium">Active Outbreak:</span>
-            <span className="font-bold text-navy bg-canvas px-2 py-0.5 rounded border border-borderline">
-              Sector 4B Surveillance Survey
-            </span>
-          </div>
-          <div className="flex items-center space-x-1.5">
-            <span className="text-muted font-medium">Jurisdiction:</span>
-            <span className="text-main font-semibold">
-              Metro Health Surveillance District
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-4 text-muted text-[11px]">
-          <span>Statistical Standard: <strong className="text-navy">Katz Log-Wald 95% CI</strong></span>
-          <span>&bull;</span>
-          <span>Zero-Cell: <strong className="text-navy">Haldane-Anscombe (+0.5)</strong></span>
-        </div>
-      </section>
 
       {/* Main Investigation Content Shell */}
       <div className="flex-1 flex flex-col">{children}</div>
