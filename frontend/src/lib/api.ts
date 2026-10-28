@@ -156,6 +156,46 @@ export const api = {
   },
 
   /**
+   * Current Dataset Metadata endpoint
+   * GET /api/v1/datasets/current
+   */
+  async getCurrentDataset(): Promise<{
+    investigation_id: string;
+    title: string;
+    geographic_area: string;
+    status: string;
+    latest_dataset_version: number;
+    total_records: number;
+    detected_sources: string[];
+  }> {
+    const res = await fetch(`${API_BASE_URL}/datasets/current`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    return handleResponse(res);
+  },
+
+  /**
+   * Candidate Sources evaluation endpoint
+   * GET /api/v1/datasets/sources
+   */
+  async getDatasetSources(params: Record<string, string> = {}): Promise<SourceAnalysisResult[]> {
+    const query = new URLSearchParams(params).toString();
+    const url = query ? `${API_BASE_URL}/datasets/sources?${query}` : `${API_BASE_URL}/datasets/sources`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    return handleResponse<SourceAnalysisResult[]>(res);
+  },
+
+  /**
    * Epidemiological calculation engine endpoint
    * POST /api/v1/analysis/calculate
    */
@@ -171,5 +211,112 @@ export const api = {
       body: JSON.stringify(payload),
     });
     return handleResponse<AnalysisResponse>(res);
+  },
+
+  /**
+   * Field Investigation Brief PDF Download
+   * GET /api/v1/reports/{invId}/pdf
+   */
+  async downloadPdfReport(invId: string = "current", cutoff?: string | null): Promise<Blob> {
+    const url = cutoff
+      ? `${API_BASE_URL}/reports/${invId}/pdf?timeline_cutoff=${encodeURIComponent(cutoff)}`
+      : `${API_BASE_URL}/reports/${invId}/pdf`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/pdf",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`PDF export failed with status ${res.status}`);
+    }
+    return res.blob();
+  },
+
+  /**
+   * Guardrailed AI Explanation using Groq (openai/gpt-oss-120b)
+   * POST /api/v1/ai/explain/{invId}
+   */
+  async getAiExplanation(invId: string = "current", cutoff?: string | null): Promise<{
+    status: string;
+    message: string;
+    draft_summary: string | null;
+    key_observations: string[];
+  }> {
+    const url = cutoff
+      ? `${API_BASE_URL}/ai/explain/${invId}?timeline_cutoff=${encodeURIComponent(cutoff)}`
+      : `${API_BASE_URL}/ai/explain/${invId}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    return handleResponse(res);
+  },
+
+  /**
+   * Response Planner Tasks (TASK-05)
+   * GET /api/v1/tasks/{invId}
+   */
+  async getTasks(invId: string = "current"): Promise<Array<{
+    task_id: string;
+    investigation_id: string;
+    title: string;
+    description?: string;
+    assigned_role?: string;
+    priority: string;
+    status: string;
+    due_date?: string;
+    associated_source_id?: string;
+  }>> {
+    const res = await fetch(`${API_BASE_URL}/tasks/${invId}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    return handleResponse(res);
+  },
+
+  /**
+   * Create Response Task (TASK-05)
+   * POST /api/v1/tasks/{invId}
+   */
+  async createTask(
+    payload: {
+      title: string;
+      description?: string;
+      assigned_role?: string;
+      priority?: string;
+      due_date?: string;
+      associated_source_id?: string;
+    },
+    invId: string = "current"
+  ): Promise<Record<string, unknown>> {
+    const res = await fetch(`${API_BASE_URL}/tasks/${invId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    return handleResponse(res);
+  },
+
+  /**
+   * Update Task Status
+   * PATCH /api/v1/tasks/{invId}/{taskId}
+   */
+  async updateTaskStatus(taskId: string, status: string, invId: string = "current"): Promise<Record<string, unknown>> {
+    const res = await fetch(`${API_BASE_URL}/tasks/${invId}/${taskId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ status }),
+    });
+    return handleResponse(res);
   },
 };

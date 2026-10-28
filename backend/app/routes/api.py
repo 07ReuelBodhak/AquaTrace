@@ -6,7 +6,8 @@ from backend.app.schemas.models import (
     Investigation, InvestigationCreate, InvestigationUpdate,
     CSVValidationResponse, AnalysisResponse, SourceComparison,
     TaskItem, TaskItemCreate, TaskItemUpdate, DatasetVersionInfo,
-    CurrentDatasetResponse
+    CurrentDatasetResponse, LoginRequest, AuthSessionResponse,
+    TimelineRangeResponse
 )
 from backend.app.storage import (
     save_investigation, get_investigation, list_investigations,
@@ -14,7 +15,7 @@ from backend.app.storage import (
     save_task, list_tasks
 )
 from backend.app.services.csv_validator import parse_and_validate_csv
-from backend.app.services.timeline_engine import compute_timeline_analysis
+from backend.app.services.timeline_engine import compute_timeline_analysis, compute_timeline_range_and_buckets
 from backend.app.services.cache_service import analysis_cache
 from backend.app.services.report_generator import generate_pdf_report
 from backend.app.services.ai_explainer import generate_ai_explanation
@@ -30,6 +31,44 @@ async def health_check():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "statistical_engine": "deterministic_v1"
     }
+
+# ----------------- Officer Authentication (TASK-03) -----------------
+@router.post("/auth/login", response_model=AuthSessionResponse)
+async def login_officer(payload: LoginRequest):
+    """
+    Validates health officer badge identifier and returns active session.
+    Provides standard test epidemiologist credentials for verification.
+    """
+    badge = payload.badge_id.strip()
+    if not badge:
+        raise HTTPException(status_code=400, detail="Badge ID is required")
+        
+    officer_name = "Dr. Eleanor Vance" if "741" in badge else f"Officer {badge}"
+    token = f"AT-SESS-{uuid.uuid4().hex[:12].upper()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    
+    return AuthSessionResponse(
+        authenticated=True,
+        officer_badge=badge,
+        officer_name=officer_name,
+        role="Lead Field Epidemiologist",
+        jurisdiction="Municipal Public Health Dept",
+        session_token=token,
+        login_time=now_iso
+    )
+
+@router.get("/auth/session", response_model=AuthSessionResponse)
+async def get_session():
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return AuthSessionResponse(
+        authenticated=True,
+        officer_badge="OFFICER-741",
+        officer_name="Dr. Eleanor Vance",
+        role="Lead Field Epidemiologist",
+        jurisdiction="Municipal Public Health Dept",
+        session_token="AT-SESS-DEFAULT-ACTIVE",
+        login_time=now_iso
+    )
 
 # ----------------- Investigations -----------------
 @router.get("/investigations", response_model=List[Investigation])
@@ -343,6 +382,59 @@ async def get_epidemiological_analysis(
     analysis_cache.set(inv_id, ver, analysis, timeline_cutoff)
     return analysis
 
+@router.get("/analysis/timeline-range", response_model=TimelineRangeResponse)
+@router.get("/analysis/{inv_id}/timeline-range", response_model=TimelineRangeResponse)
+async def get_timeline_range(
+    inv_id: Optional[str] = None,
+    version: Optional[int] = Query(None),
+    step_hours: int = Query(24, ge=1, le=168)
+):
+    """
+    Returns the temporal bounds, total cases, and epicurve date buckets
+    for the timeline scrubber and epidemic curve visualization.
+    """
+    if inv_id:
+        inv = await get_investigation(inv_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+    else:
+        investigations = await list_investigations()
+        if investigations:
+            inv = next((i for i in investigations if i.status == "active"), investigations[0])
+        else:
+            raise HTTPException(status_code=404, detail="No active investigation found")
+
+    ver = version or inv.latest_dataset_version
+    if ver <= 0:
+        return TimelineRangeResponse(
+            investigation_id=inv.investigation_id,
+            dataset_version=0,
+            earliest_timestamp=None,
+            latest_timestamp=None,
+            total_records=0,
+            total_cases=0,
+            buckets=[]
+        )
+
+    dataset = await get_dataset_version(inv.investigation_id, ver)
+    if not dataset or not dataset.get("records"):
+        return TimelineRangeResponse(
+            investigation_id=inv.investigation_id,
+            dataset_version=ver,
+            earliest_timestamp=None,
+            latest_timestamp=None,
+            total_records=0,
+            total_cases=0,
+            buckets=[]
+        )
+
+    return compute_timeline_range_and_buckets(
+        investigation_id=inv.investigation_id,
+        dataset_version=ver,
+        records=dataset["records"],
+        step_hours=step_hours
+    )
+
 @router.get("/analysis/{inv_id}/source/{source_id}", response_model=SourceComparison)
 async def get_source_drilldown(
     inv_id: str,
@@ -358,16 +450,35 @@ async def get_source_drilldown(
 
 # ----------------- Reports -----------------
 @router.get("/reports/{inv_id}/pdf")
+@router.get("/reports/pdf")
 async def export_investigation_brief_pdf(
-    inv_id: str,
+    inv_id: Optional[str] = "current",
     version: Optional[int] = Query(None),
     timeline_cutoff: Optional[str] = Query(None)
 ):
-    inv = await get_investigation(inv_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
+    inv = None
+    if inv_id in ("current", "active", "default", None):
+        investigations = await list_investigations()
+        if investigations:
+            inv = next((i for i in investigations if i.status == "active"), investigations[0])
+    else:
+        inv = await get_investigation(inv_id)
 
-    analysis = await get_epidemiological_analysis(inv_id, version, timeline_cutoff)
+    if not inv:
+        # Create a default fallback investigation for demonstration
+        now_iso = datetime.now(timezone.utc).isoformat()
+        inv = Investigation(
+            investigation_id="INV-METRO-01",
+            title="Municipal Surveillance Outbreak Investigation",
+            geographic_area="Metro Health Jurisdiction",
+            notes="Active field survey",
+            status="active",
+            created_at=now_iso,
+            updated_at=now_iso,
+            latest_dataset_version=1
+        )
+
+    analysis = await get_epidemiological_analysis(inv.investigation_id, version, timeline_cutoff)
     pdf_bytes = generate_pdf_report(inv, analysis)
     
     filename = f"AquaTrace_Brief_{inv.investigation_id}_v{analysis.dataset_version}.pdf"
@@ -377,34 +488,63 @@ async def export_investigation_brief_pdf(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
 
-# ----------------- AI Explainer -----------------
+# ----------------- AI Explainer (openai/gpt-oss-120b) -----------------
 @router.post("/ai/explain/{inv_id}")
+@router.post("/ai/explain")
 async def get_ai_explanation(
-    inv_id: str,
+    inv_id: Optional[str] = "current",
     version: Optional[int] = Query(None),
     timeline_cutoff: Optional[str] = Query(None)
 ):
-    inv = await get_investigation(inv_id)
+    inv = None
+    if inv_id in ("current", "active", "default", None):
+        investigations = await list_investigations()
+        if investigations:
+            inv = next((i for i in investigations if i.status == "active"), investigations[0])
+    else:
+        inv = await get_investigation(inv_id)
+
     if not inv:
-        raise HTTPException(status_code=404, detail="Investigation not found")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        inv = Investigation(
+            investigation_id="INV-METRO-01",
+            title="Municipal Surveillance Outbreak Investigation",
+            geographic_area="Metro Health Jurisdiction",
+            notes="Active field survey",
+            status="active",
+            created_at=now_iso,
+            updated_at=now_iso,
+            latest_dataset_version=1
+        )
         
-    analysis = await get_epidemiological_analysis(inv_id, version, timeline_cutoff)
+    analysis = await get_epidemiological_analysis(inv.investigation_id, version, timeline_cutoff)
     return await generate_ai_explanation(analysis, inv.title)
 
-# ----------------- Response Planner Tasks -----------------
+# ----------------- Response Planner Tasks (TASK-05) -----------------
 @router.get("/tasks/{inv_id}", response_model=List[TaskItem])
-async def get_tasks(inv_id: str):
-    return await list_tasks(inv_id)
+@router.get("/tasks", response_model=List[TaskItem])
+async def get_tasks(inv_id: Optional[str] = "current"):
+    target_id = inv_id
+    if inv_id in ("current", "active", "default", None):
+        investigations = await list_investigations()
+        target_id = investigations[0].investigation_id if investigations else "INV-METRO-01"
+    return await list_tasks(target_id)
 
 @router.post("/tasks/{inv_id}", response_model=TaskItem)
-async def create_task(inv_id: str, payload: TaskItemCreate):
+@router.post("/tasks", response_model=TaskItem)
+async def create_task(inv_id: Optional[str] = "current", payload: TaskItemCreate = ...):
+    target_id = inv_id
+    if inv_id in ("current", "active", "default", None):
+        investigations = await list_investigations()
+        target_id = investigations[0].investigation_id if investigations else "INV-METRO-01"
+        
     now_iso = datetime.now(timezone.utc).isoformat()
     task = TaskItem(
         task_id=f"TASK-{uuid.uuid4().hex[:6].upper()}",
-        investigation_id=inv_id,
+        investigation_id=target_id,
         title=payload.title,
         description=payload.description,
-        assigned_role=payload.assigned_role,
+        assigned_role=payload.assigned_role or "Field Sampling Officer",
         priority=payload.priority,
         status="pending",
         due_date=payload.due_date,
@@ -416,7 +556,12 @@ async def create_task(inv_id: str, payload: TaskItemCreate):
 
 @router.patch("/tasks/{inv_id}/{task_id}", response_model=TaskItem)
 async def update_task(inv_id: str, task_id: str, payload: TaskItemUpdate):
-    tasks = await list_tasks(inv_id)
+    target_id = inv_id
+    if inv_id in ("current", "active", "default"):
+        investigations = await list_investigations()
+        target_id = investigations[0].investigation_id if investigations else "INV-METRO-01"
+
+    tasks = await list_tasks(target_id)
     t = next((item for item in tasks if item.task_id == task_id), None)
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")

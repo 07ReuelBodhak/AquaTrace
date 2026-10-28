@@ -12,6 +12,8 @@ AquaTrace equips field investigators with deterministic statistical tools to eva
 
 ## Getting Started
 
+Backend settings are read from environment variables. Copy the root `.env.example` to `backend/.env` for local backend configuration. The frontend reads `NEXT_PUBLIC_API_URL`; set it in the frontend environment or `frontend/.env.local`. Its local API URL is `http://localhost:8000/api/v1`.
+
 ### Backend Setup
 ```bash
 cd backend

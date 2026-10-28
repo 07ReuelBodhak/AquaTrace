@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
+from collections import defaultdict
 from backend.app.services.statistical_engine import calculate_source_statistics
-from backend.app.schemas.models import AnalysisResponse, SourceComparison
+from backend.app.schemas.models import AnalysisResponse, SourceComparison, TimelineRangeResponse, EpicurveBucket
 
 def parse_iso_datetime(dt_str: str) -> Optional[datetime]:
     if not dt_str:
@@ -91,4 +92,79 @@ def compute_timeline_analysis(
         sources=sources_res,
         methodology_note="Deterministic 2x2 contingency matrix with log-RR 95% Wald CI (Timeline Replay Filtered)",
         statistical_method_version="1.0.0-deterministic"
+    )
+
+def compute_timeline_range_and_buckets(
+    investigation_id: str,
+    dataset_version: int,
+    records: List[Dict[str, Any]],
+    step_hours: int = 24
+) -> TimelineRangeResponse:
+    """
+    Computes earliest and latest timestamps, total case counts, and epicurve buckets
+    for outbreak temporal replay.
+    """
+    valid_dts: List[datetime] = []
+    cases_by_day = defaultdict(int)
+    surveys_by_day = defaultdict(int)
+    total_cases = 0
+
+    for r in records:
+        dt = parse_iso_datetime(r.get("recorded_at", ""))
+        is_ill = str(r.get("illness_status", "")).strip().lower() == "ill"
+        if is_ill:
+            total_cases += 1
+            
+        if dt:
+            valid_dts.append(dt)
+            day_str = dt.strftime("%Y-%m-%d")
+            surveys_by_day[day_str] += 1
+            if is_ill:
+                cases_by_day[day_str] += 1
+
+    if not valid_dts:
+        return TimelineRangeResponse(
+            investigation_id=investigation_id,
+            dataset_version=dataset_version,
+            earliest_timestamp=None,
+            latest_timestamp=None,
+            total_records=len(records),
+            total_cases=total_cases,
+            buckets=[]
+        )
+
+    valid_dts.sort()
+    earliest = valid_dts[0]
+    latest = valid_dts[-1]
+
+    # Generate day buckets across range
+    buckets: List[EpicurveBucket] = []
+    curr = datetime(earliest.year, earliest.month, earliest.day, tzinfo=timezone.utc)
+    end = datetime(latest.year, latest.month, latest.day, tzinfo=timezone.utc) + timedelta(days=1)
+    
+    cumulative = 0
+    while curr <= end:
+        day_key = curr.strftime("%Y-%m-%d")
+        daily_cases = cases_by_day[day_key]
+        daily_surveys = surveys_by_day[day_key]
+        cumulative += daily_cases
+        
+        # Include if within range
+        buckets.append(EpicurveBucket(
+            timestamp=curr.isoformat(),
+            date_label=curr.strftime("%b %d"),
+            case_count=daily_cases,
+            cumulative_cases=cumulative,
+            survey_count=daily_surveys
+        ))
+        curr += timedelta(hours=step_hours)
+
+    return TimelineRangeResponse(
+        investigation_id=investigation_id,
+        dataset_version=dataset_version,
+        earliest_timestamp=earliest.isoformat(),
+        latest_timestamp=latest.isoformat(),
+        total_records=len(records),
+        total_cases=total_cases,
+        buckets=buckets
     )

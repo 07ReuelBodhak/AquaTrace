@@ -18,7 +18,8 @@ class AnalysisCache:
         method_version: str = "1.0.0-deterministic"
     ) -> str:
         raw_key = f"{investigation_id}::v{dataset_version}::t_{timeline_cutoff or 'full'}::m_{method_version}"
-        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        hashed = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        return f"{investigation_id}::{hashed}"
 
     def get(
         self,

@@ -155,3 +155,34 @@ class TaskItemUpdate(BaseModel):
     status: Optional[str] = None
     due_date: Optional[str] = None
     completion_notes: Optional[str] = None
+
+# ----------------- Auth Models (TASK-03) -----------------
+class LoginRequest(BaseModel):
+    badge_id: str = Field(..., min_length=2, max_length=50)
+    pin: Optional[str] = None
+
+class AuthSessionResponse(BaseModel):
+    authenticated: bool
+    officer_badge: str
+    officer_name: str
+    role: str
+    jurisdiction: str
+    session_token: str
+    login_time: str
+
+# ----------------- Epicurve & Timeline Range (TASK-03) -----------------
+class EpicurveBucket(BaseModel):
+    timestamp: str
+    date_label: str
+    case_count: int
+    cumulative_cases: int
+    survey_count: int
+
+class TimelineRangeResponse(BaseModel):
+    investigation_id: str
+    dataset_version: int
+    earliest_timestamp: Optional[str]
+    latest_timestamp: Optional[str]
+    total_records: int
+    total_cases: int
+    buckets: List[EpicurveBucket]

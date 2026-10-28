@@ -1,7 +1,19 @@
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from backend.app.database import get_database
-from backend.app.schemas.models import Investigation, TaskItem
+
+try:
+    from backend.app.database import get_database
+    from backend.app.schemas.models import Investigation, TaskItem
+except ImportError:
+    from app.database import get_database
+    from app.schemas.models import Investigation, TaskItem
 
 # Fallback in-memory store if MongoDB is offline or in development
 memory_store: Dict[str, Any] = {

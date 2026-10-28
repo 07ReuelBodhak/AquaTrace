@@ -1,4 +1,11 @@
 import io
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 from datetime import datetime, timezone
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import (
@@ -6,7 +13,11 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-from backend.app.schemas.models import AnalysisResponse, Investigation
+
+try:
+    from backend.app.schemas.models import AnalysisResponse, Investigation
+except ImportError:
+    from app.schemas.models import AnalysisResponse, Investigation
 
 def generate_pdf_report(
     investigation: Investigation,

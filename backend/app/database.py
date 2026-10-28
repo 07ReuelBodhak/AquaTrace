@@ -1,6 +1,7 @@
 import logging
+import re
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from backend.app.config import settings
+from backend.app.core.config import settings
 
 logger = logging.getLogger("aquatrace.database")
 
@@ -19,7 +20,8 @@ async def connect_to_mongo():
         db_instance.db = db_instance.client[settings.MONGODB_DATABASE]
         # Test connection
         await db_instance.client.admin.command('ping')
-        logger.info(f"Connected to MongoDB at {settings.MONGODB_URI}, database: {settings.MONGODB_DATABASE}")
+        sanitized_uri = re.sub(r"://([^:]+):([^@]+)@", "://***:***@", settings.MONGODB_URI)
+        logger.info(f"Connected to MongoDB at {sanitized_uri}, database: {settings.MONGODB_DATABASE}")
         
         # Initialize indexes
         await init_db_indexes(db_instance.db)

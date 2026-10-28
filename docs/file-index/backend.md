@@ -8,7 +8,7 @@ This document tracks all files inside the `/backend` directory. Agents must cons
 
 | File Path | Purpose / Responsibility | Imports / Upstream Modules | Connected Routes / Downstream Dependents | External Libraries (in `.venv`) |
 | :--- | :--- | :--- | :--- | :--- |
-| `backend/app/core/config.py` | App configuration and environment settings | `pydantic_settings` | `backend/app/main.py` | `pydantic-settings` |
+| `backend/app/core/config.py` | Single source for typed backend settings loaded from environment variables and `.env` | `pydantic_settings` | `backend/app/main.py`, `backend/app/database.py`, `backend/app/services/ai_explainer.py`, `backend/app/api/v1/endpoints/health.py` | `pydantic-settings` |
 | `backend/app/core/exceptions.py` | Custom domain exceptions and standard error formats | None | `backend/app/main.py`, services, endpoints | Standard library |
 | `backend/app/models/schemas.py` | Pydantic request/response models conforming to `/docs/api-contract.md` | `pydantic` | All endpoints and services | `pydantic` |
 | `backend/app/services/epi_engine.py` | Deterministic 2x2 contingency matrix, attack rates, Wald 95% CI, Haldane-Anscombe correction, and priority classification | `math`, `typing`, `backend.app.models.schemas` | `backend/app/services/data_store.py`, `backend/app/api/v1/endpoints/analysis.py` | None |
@@ -25,6 +25,9 @@ This document tracks all files inside the `/backend` directory. Agents must cons
 | `backend/app/services/csv_validator.py` | Ingests, inspects, and validates outbreak survey CSV records and candidate water sources | `csv`, `io`, `datetime`, `backend.app.schemas.models` | `backend/app/routes/api.py` | None |
 | `backend/app/storage.py` | Asynchronous in-memory / MongoDB storage repository for investigations, dataset versions, and response tasks | `motor`, `backend.app.database`, `backend.app.schemas.models` | `backend/app/routes/api.py` | `motor`, `pymongo` |
 | `backend/app/main.py` | FastAPI application initialization, CORS middleware, lifespan events, and standard JSON error handlers | `fastapi`, `fastapi.middleware.cors`, `backend.app.core.config`, `backend.app.api.v1.router` | Server entrypoint | `fastapi`, `uvicorn` |
+| `backend/app/database.py` | MongoDB connection lifecycle and index setup using centralized environment settings | `motor`, `backend.app.core.config` | `backend/app/main.py`, `backend/app/storage.py` | `motor`, `pymongo` |
+| `backend/app/services/ai_explainer.py` | Guardrailed narrative generation using Groq (`openai/gpt-oss-120b`) with allowlisted aggregates and deterministic fallback | `groq`, `backend.app.core.config`, `backend.app.schemas.models` | `backend/app/routes/api.py` | `groq` |
+| `backend/app/services/report_generator.py` | Server-side monochromatic Field Investigation Brief PDF generator formatted for public health records | `reportlab`, `backend.app.schemas.models` | `backend/app/routes/api.py` | `reportlab` |
 
 ---
 

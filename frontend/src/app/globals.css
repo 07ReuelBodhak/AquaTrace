@@ -3,20 +3,23 @@
 @tailwind utilities;
 
 :root {
-  --color-ink: #111827;
-  --color-slate: #374151;
-  --color-mist: #F3F4F6;
-  --color-white: #FFFFFF;
+  /* Water & Public Health Design Tokens */
+  --color-navy: #123B5D;
+  --color-teal: #0F766E;
+  --color-aqua: #DDF4F1;
+  --color-canvas: #F6FAFC;
+  --color-surface: #FFFFFF;
+  --color-main: #273746;
+  --color-muted: #526777;
+  --color-border: #D9E5EB;
 
-  --background: var(--color-mist);
-  --foreground: var(--color-ink);
-  --border-color: var(--color-slate);
-}
+  /* Semantic status tokens */
+  --color-success: #166534;
+  --color-warning: #A16207;
+  --color-danger: #B42318;
 
-/* Strict High-Contrast Slate Palette & Anti-Glassmorphism Invariants */
-* {
-  border-radius: 0px !important;
-  box-shadow: none !important;
+  --background: var(--color-canvas);
+  --foreground: var(--color-main);
 }
 
 html {
@@ -24,8 +27,8 @@ html {
 }
 
 body {
-  color: var(--color-ink);
-  background-color: var(--color-mist);
+  color: var(--color-main);
+  background-color: var(--color-canvas);
   font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   margin: 0;
   padding: 0;
@@ -33,11 +36,24 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Focus styles for keyboard accessibility */
+/* Typography Roles */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--color-navy);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+p, span, td, th, input, select, textarea, button {
+  color: inherit;
+}
+
+/* Focus styles for keyboard accessibility (WCAG 2.2 AA) */
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
-  outline: 2px solid var(--color-ink);
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-teal);
   outline-offset: 2px;
 }
 
@@ -56,17 +72,21 @@ input:focus-visible {
   }
 }
 
-/* Custom Minimalist Public Health Scrollbar (Monochrome) */
+/* Smooth Public Health Scrollbar */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 8px;
+  height: 8px;
 }
+
 ::-webkit-scrollbar-track {
-  background: var(--color-mist);
+  background: var(--color-canvas);
 }
+
 ::-webkit-scrollbar-thumb {
-  background: var(--color-slate);
+  background: #CBD5E1;
+  border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-ink);
+  background: #94A3B8;
 }

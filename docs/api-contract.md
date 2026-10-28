@@ -110,6 +110,8 @@ All epidemiological calculations are deterministic and follow established public
 | Method | Endpoint | Description | Request Type | Response Type | Status Codes |
 | :---: | :--- | :--- | :--- | :--- | :---: |
 | `GET` | `/api/v1/health` | Service health status | None | `HealthResponse` | 200 |
+| `POST` | `/api/v1/auth/login` | Health officer authentication / mock credentials | `LoginRequest` | `AuthSessionResponse` | 200, 401 |
+| `GET` | `/api/v1/auth/session` | Inspect active officer session status | None | `AuthSessionResponse` | 200, 401 |
 | `POST` | `/api/v1/datasets/upload` | Upload survey and source CSVs | `multipart/form-data` | `DatasetUploadResponse` | 200, 400, 422 |
 | `GET` | `/api/v1/datasets/current` | Active dataset summary & detected sources | None | `DatasetMetadataResponse` | 200, 404 |
 | `GET` | `/api/v1/datasets/sources` | Evaluated candidate water sources with 2x2 counts, attack rates, relative risk, Wald 95% CI, and priority status (supports `sort_by`, `order`, `priority_filter`, `timeline_cutoff`) | Query params | `List[SourceComparison]` | 200, 404 |
